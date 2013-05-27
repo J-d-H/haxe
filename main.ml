@@ -854,7 +854,7 @@ try
 			set_platform Cs dir;
 		),"<directory> : generate C# code into target directory");
 		("-java",Arg.String (fun dir ->
-			cp_libs := "hxjava" :: !cp_libs;
+			(*cp_libs := "hxjava" :: !cp_libs;*)
 			set_platform Java dir;
 		),"<directory> : generate Java code into target directory");
 		("-xml",Arg.String (fun file ->
