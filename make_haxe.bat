@@ -1,0 +1,1 @@
+make MSVC=1 MSVC_OUTPUT=0 -j4 -f Makefile.win haxe
