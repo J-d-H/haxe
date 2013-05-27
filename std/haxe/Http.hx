@@ -356,8 +356,11 @@ class Http {
 				#else
 				throw "Https is only supported with -lib hxssl";
 				#end
-			} else
+			} else {
+				#if !cs
 				sock = new Socket();
+				#end
+			}
 		}
 		var host = url_regexp.matched(2);
 		var portString = url_regexp.matched(3);
@@ -466,10 +469,16 @@ class Http {
 		else if( post && uri != null )
 			b.add(uri);
 		try {
-			if( Http.PROXY != null )
+			if( Http.PROXY != null ) {
+				#if !cs
 				sock.connect(new Host(Http.PROXY.host),Http.PROXY.port);
-			else
+				#end
+			}
+			else {
+				#if !cs
 				sock.connect(new Host(host),port);
+				#end
+			}
 			sock.write(b.toString());
 			if( multipart ) {
 				var bufsize = 4096;
