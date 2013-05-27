@@ -108,9 +108,9 @@ class Parser
 					if (c == '<'.code)
 					{
 						#if php
-						var child = Xml.createPCDataFromCustomParser(buf.toString() + str.substr(start, p - start));
+						var child = Xml.createPCDataFromCustomParser(replaceEntities(buf.toString() + str.substr(start, p - start)));
 						#else
-						var child = Xml.createPCData(buf.toString() + str.substr(start, p - start));
+						var child = Xml.createPCData(replaceEntities(buf.toString() + str.substr(start, p - start)));
 						#end
 						buf = new StringBuf();
 						parent.addChild(child);
@@ -239,7 +239,7 @@ class Parser
 					if (c == str.fastCodeAt(start))
 					{
 						var val = str.substr(start+1,p-start-1);
-						xml.set(aname, val);
+						xml.set(aname, replaceEntities(val));
 						state = S.IGNORE_SPACES;
 						next = S.BODY;
 					}
@@ -342,5 +342,55 @@ class Parser
 	
 	static inline function isValidChar(c) {
 		return (c >= 'a'.code && c <= 'z'.code) || (c >= 'A'.code && c <= 'Z'.code) || (c >= '0'.code && c <= '9'.code) || c == ':'.code || c == '.'.code || c == '_'.code || c == '-'.code;
+	}
+
+	static function replaceEntities(text:String):String
+	{
+		var replaced = new StringBuf();
+		var i = 0;
+		while (i < text.length)
+		{
+			if (text.charCodeAt(i) == '&'.code)
+			{
+				var oldIndex = i;
+				while (text.charCodeAt(i) != ';'.code && i < text.length)
+				{
+					++i;
+				}
+				var entity = text.substr(oldIndex + 1, i - oldIndex - 1);
+				if (entity.charCodeAt(0) == '#'.code)
+				{
+					if (entity.charCodeAt(1) == 'x'.code)
+					{
+						var num = entity.substr(2);
+						replaced.addChar(Std.parseInt("0" + entity.substr(1)));
+					}
+					else
+					{
+						var num = entity.substr(1);
+						replaced.addChar(Std.parseInt(entity.substr(1)));
+					}
+				}
+				else
+				{
+					switch (entity)
+					{
+						case "quot":
+							replaced.addChar('"'.code);
+						case "amp":
+							replaced.addChar('&'.code);
+						case "apos":
+							replaced.addChar("'".code);
+						case "lt":
+							replaced.addChar('<'.code);
+						case "gt":
+							replaced.addChar('>'.code);
+					}
+				}
+			}
+			else replaced.addChar(text.charCodeAt(i));
+			++i;
+		}
+		return replaced.toString();
 	}
 }
