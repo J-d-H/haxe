@@ -3722,12 +3722,12 @@ let generate common_ctx =
 	| Some path -> (snd path)
 	| _ -> "output" in
 
-	write_build_data (common_ctx.file ^ "/Build.xml") !exe_classes !main_deps !build_xml output_name;
+	(*write_build_data (common_ctx.file ^ "/Build.xml") !exe_classes !main_deps !build_xml output_name;*)
 	let cmd_defines = ref "" in
 	PMap.iter ( fun name value -> match name with
         | "true" | "sys" | "dce" | "cpp" | "debug" -> ()
         | _ -> cmd_defines := !cmd_defines ^ " -D" ^ name ^ "=\"" ^ (escape_command value) ^ "\"" ) common_ctx.defines;
-	write_build_options (common_ctx.file ^ "/Options.txt") !cmd_defines;
+	(*write_build_options (common_ctx.file ^ "/Options.txt") !cmd_defines;*)
 	if ( not (Common.defined common_ctx Define.NoCompilation) ) then begin
 		let old_dir = Sys.getcwd() in
 		Sys.chdir common_ctx.file;
