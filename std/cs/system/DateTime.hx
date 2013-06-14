@@ -30,7 +30,8 @@ import haxe.Int64;
 @:native("System.DateTime")
 extern class DateTime 
 {
-
+	static function Parse( s : String ) : DateTime;
+	
 	@:overload(function(year : Int, month : Int, day : Int, hour : Int, min : Int, sec : Int ):Void {})
 	function new(ticks:Int64):Void;
 	

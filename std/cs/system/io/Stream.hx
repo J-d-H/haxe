@@ -21,6 +21,7 @@
  */
 package cs.system.io;
 import cs.StdTypes;
+import cs.system.IAsyncResult;
 import haxe.Int64;
 import haxe.io.BytesData;
 
@@ -35,6 +36,7 @@ import haxe.io.BytesData;
 	var ReadTimeout:Bool;
 	var WriteTimeout:Bool;
 	
+	function BeginWrite( buffer : BytesData, offset : Int, count : Int, callback : AsyncCallback, state : Dynamic ) : IAsyncResult;
 	function Close():Void;
 	function CopyTo(dest:Stream):Void;
 	function Dispose():Void;

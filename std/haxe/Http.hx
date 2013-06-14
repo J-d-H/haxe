@@ -114,7 +114,7 @@ class Http {
 	/**
 		Sets the parameter identified as `param` to value `value`.
 
-		If `header` or `value` are null, the result is unspecified.
+		If `param` or `value` are null, the result is unspecified.
 
 		This method provides a fluent interface.
 	**/
@@ -135,6 +135,11 @@ class Http {
 		This method provides a fluent interface.
 	**/
 	public function setPostData( data : String ):Http {
+		#if sys
+		if ( data != null && file != null ) {
+			throw "Use either postData or fileTransfert.";
+		}
+		#end
 		postData = data;
 		return this;
 	}
@@ -337,6 +342,9 @@ class Http {
 #if sys
 
 	public function fileTransfert( argname : String, filename : String, file : haxe.io.Input, size : Int ) {
+		if ( postData != null ) {
+			throw "Use either postData or fileTransfert.";
+		}
 		this.file = { param : argname, filename : filename, io : file, size : size };
 	}
 
