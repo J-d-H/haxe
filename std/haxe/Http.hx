@@ -38,6 +38,40 @@ private typedef AbstractSocket = {
 
 #end
 
+@:allow(haxe.Http) 
+class HttpResponse {
+	public var headers(default, null) : Map<String,String>;
+	public var data(default, null) : Null<String>;
+	/**
+		The http status code returned from the server.
+	**/
+	public var status(default, null) : HttpStatusCode;
+	public var error(default, null) : Null<String>;
+	
+	private function new() {
+		data = null;
+		headers = null;
+		status = HttpStatusCode.NotSet;
+		error = null;
+	}
+	
+	public function toString() {
+		var str = "HttpResponse {";
+		str +=     "\n     status: " + status;
+		if (headers != null) {
+			str += "\n    headers: " + headers.toString();
+		}
+		if (data != null) {
+			str += "\n       data: " + data;
+		}
+		if (error != null) {
+			str += "\n      error: " + error;
+		}
+		str += "\n}";
+		return str;
+	}
+}
+
 /**
 	This class can be used to handle Http requests consistently across
 	platforms. There are two intended usages:
@@ -55,11 +89,10 @@ class Http {
 		Urls.
 	**/
 	public var url : String;
-	public var responseData(default, null) : Null<String>;
+	public var response(default, null) : HttpResponse;
 #if sys
 	public var noShutdown : Bool;
 	public var cnxTimeout : Float;
-	public var responseHeaders : haxe.ds.StringMap<String>;
 	var chunk_size : Null<Int>;
 	var chunk_buf : haxe.io.Bytes;
 	var file : { param : String, filename : String, io : haxe.io.Input, size : Int };
@@ -164,33 +197,73 @@ class Http {
 	**/
 	public function request( ?post : Bool ) : Void {
 		var me = this;
+		me.response = new HttpResponse();
 	#if js
-		me.responseData = null;
 		var r = js.Browser.createXMLHttpRequest();
 		var onreadystatechange = function(_) {
-			if( r.readyState != 4 )
-				return;
-			var s = try r.status catch( e : Dynamic ) null;
-			if( s == untyped __js__("undefined") )
-				s = null;
-			if( s != null )
-				me.onStatus(s);
-			if( s != null && s >= 200 && s < 400 )
-				me.onData(me.responseData = r.responseText);
-			else if ( s == null )
-				me.onError("Failed to connect or resolve host")
-			else switch( s ) {
-			case 12029:
-				me.onError("Failed to connect to host");
-			case 12007:
-				me.onError("Unknown host");
-			default:
-				me.responseData = r.responseText;
-				me.onError("Http Error #"+r.status);
+			if ( r.readyState == 2 ) {
+				me.response.status = r.status;
+				switch( r.status ) {
+				case 12029:
+					me.response.status = 0;
+					me.response.error = "Failed to connect to host";
+					r.abort();
+					me.onError( me.response.error );
+				case 12007:
+					me.response.status = 0;
+					me.response.error = "Unknown host";
+					r.abort();
+					me.onError( me.response.error );
+				case 0:
+					me.response.error = "Failed to connect or resolve host";
+					r.abort();
+					me.onError( me.response.error );
+				default:
+					me.response.status = r.status;
+					var headersString = r.getAllResponseHeaders();
+					if (headersString.length > 0) {
+						me.response.headers = new Map();
+						for (header in headersString.split("\r\n")) {
+							var h = header.split(": ");
+							if (h.length == 2) {
+								me.response.headers.set( h[0], h[1] );
+							}
+						}
+					}
+					me.onStatus(me.response.status);
+				}
+			} else if (r.readyState == 4) {
+				switch (r.status) {
+				case 12029:
+					me.response.status = 0;
+					me.response.error = "Failed to connect to host";
+					me.onError( me.response.error );
+				case 12007:
+					me.response.status = 0;
+					me.response.error = "Unknown host";
+					me.onError( me.response.error );
+				case 0:
+					me.response.status = 0;
+					me.response.error = "Failed to connect or resolve host";
+					me.onError( me.response.error );
+				default:
+					if (me.response.status != r.status) {
+						me.response.status = r.status;
+						me.onStatus( me.response.status );
+					}
+					me.response.data = r.responseText;
+					if( (cast me.response.status) >= HttpStatusCode.OK && (cast me.response.status) < 400 ) {
+						me.onData(me.response.data);
+					} else {
+						me.response.error = "Http Error #" + me.response.status;
+						me.onError(me.response.error);
+					}
+				}
 			}
 		};
-		if( async )
+		if ( async ) {
 			r.onreadystatechange = onreadystatechange;
+		}
 		var uri = postData;
 		if( uri != null )
 			post = true;
@@ -211,7 +284,7 @@ class Http {
 			} else
 				r.open("GET",url,async);
 		} catch( e : Dynamic ) {
-			onError(e.toString());
+			onError(e.toString()); // TODO: throw this since it is isn't async yet?
 			return;
 		}
 		if( headers.get("Content-Type") == null && post && postData == null )
@@ -223,23 +296,25 @@ class Http {
 		if( !async )
 			onreadystatechange(null);
 	#elseif flash9
-		me.responseData = null;
 		var loader = new flash.net.URLLoader();
 		loader.addEventListener( "complete", function(e) {
-			me.responseData = loader.data;
-			me.onData( loader.data );
+			me.response.data = loader.data;
+			me.onData( me.response.data );
 		});
-		loader.addEventListener( "httpStatus", function(e:flash.events.HTTPStatusEvent){
+		loader.addEventListener( "httpStatus", function(e:flash.events.HTTPStatusEvent) {
+			me.response.status = e.status;
 			// on Firefox 1.5, Flash calls onHTTPStatus with 0 (!??)
 			if( e.status != 0 )
 				me.onStatus( e.status );
 		});
 		loader.addEventListener( "ioError", function(e:flash.events.IOErrorEvent) {
-			me.responseData = loader.data;
-			me.onError(e.text);
+			me.response.data = loader.data;
+			me.response.error = e.text;
+			me.onError( me.response.error );
 		});
-		loader.addEventListener( "securityError", function(e:flash.events.SecurityErrorEvent){
-			me.onError(e.text);
+		loader.addEventListener( "securityError", function(e:flash.events.SecurityErrorEvent) {
+			me.response.error = e.text;
+			me.onError( me.response.error );
 		});
 
 		// headers
@@ -274,11 +349,12 @@ class Http {
 
 		try {
 			loader.load( request );
-		}catch( e : Dynamic ){
-			onError("Exception: "+Std.string(e));
+		} catch ( e : Dynamic ) {
+			me.response.error = "Exception: " + Std.string(e);
+			onError(me.response.error);
 		}
 	#elseif flash
-		me.responseData = null;
+		me.response.data = null;
 		var r = new flash.LoadVars();
 		// on Firefox 1.5, onData is not called if host/port invalid (!)
 		r.onData = function(data) {
@@ -286,7 +362,7 @@ class Http {
 				me.onError("Failed to retrieve url");
 				return;
 			}
-			me.responseData = data;
+			me.response.data = data;
 			me.onData(data);
 		};
 		#if flash8
@@ -316,15 +392,14 @@ class Http {
 		if( !r.sendAndLoad(small_url,r,if( param ) { if( post ) "POST" else "GET"; } else null) )
 			onError("Failed to initialize Connection");
 	#elseif sys
-		var me = this;
 		var output = new haxe.io.BytesOutput();
 		var old = onError;
 		var err = false;
 		onError = function(e) {
 			#if neko
-			me.responseData = neko.Lib.stringReference(output.getBytes());
+			me.response.data = neko.Lib.stringReference(output.getBytes());
 			#else
-			me.responseData = output.getBytes().toString();
+			me.response.data = output.getBytes().toString();
 			#end
 			err = true;
 			old(e);
@@ -332,27 +407,28 @@ class Http {
 		customRequest(post,output);
 		if( !err )
 		#if neko
-			me.onData(me.responseData = neko.Lib.stringReference(output.getBytes()));
+			me.response.data = neko.Lib.stringReference(output.getBytes());
 		#else
-			me.onData(me.responseData = output.getBytes().toString());
+			me.response.data = output.getBytes().toString();
 		#end
+		me.onData(me.response.data);
 	#end
 	}
 
-#if sys
-
-	public function fileTransfert( argname : String, filename : String, file : haxe.io.Input, size : Int ) {
+#if (sys || flash_socket)
+	public function fileTransfer( argname : String, filename : String, file : haxe.io.Input, size : Int ) : Void {
 		if ( postData != null ) {
 			throw "Use either postData or fileTransfert.";
 		}
 		this.file = { param : argname, filename : filename, io : file, size : size };
 	}
 
-	public function customRequest( post : Bool, api : haxe.io.Output, ?sock : AbstractSocket, ?method : String  ) {
-		this.responseData = null;
+	public function customRequest( post : Bool, api : haxe.io.Output, ?sock : AbstractSocket, ?method : String  ) : Void {
+		this.response = new HttpResponse();
 		var url_regexp = ~/^(https?:\/\/)?([a-zA-Z\.0-9-]+)(:[0-9]+)?(.*)$/;
-		if( !url_regexp.match(url) ) {
-			onError("Invalid URL");
+		if ( !url_regexp.match(url) ) {
+			response.error = "Invalid URL";
+			onError(response.error);
 			return;
 		}
 		var secure = (url_regexp.matched(1) == "https://");
@@ -360,6 +436,8 @@ class Http {
 			if( secure ) {
 				#if php
 				sock = new php.net.SslSocket();
+				#elseif flash_socket
+				sock = new Socket(true);
 				#elseif hxssl
 				sock = new neko.tls.Socket();
 				#else
@@ -500,8 +578,9 @@ class Http {
 			readHttpResponse(api,sock);
 			sock.close();
 		} catch( e : Dynamic ) {
-			try sock.close() catch( e : Dynamic ) { };
-			onError(Std.string(e));
+			try sock.close() catch ( e : Dynamic ) { };
+			this.response.error = "Exception: " + Std.string(e);
+			onError(this.response.error);
 		}
 	}
 
@@ -573,8 +652,8 @@ class Http {
 		#else
 		var headers = b.getBytes().toString().split("\r\n");
 		#end
-		var response = headers.shift();
-		var rp = response.split(" ");
+		var nativeResponse = headers.shift();
+		var rp = nativeResponse.split(" ");
 		var status = Std.parseInt(rp[1]);
 		if( status == 0 || status == null )
 			throw "Response status error";
@@ -582,14 +661,14 @@ class Http {
 		// remove the two lasts \r\n\r\n
 		headers.pop();
 		headers.pop();
-		responseHeaders = new haxe.ds.StringMap();
+		response.headers = new Map();
 		var size = null;
 		var chunked = false;
 		for( hline in headers ) {
 			var a = hline.split(": ");
 			var hname = a.shift();
 			var hval = if( a.length == 1 ) a[0] else a.join(": ");
-			responseHeaders.set(hname, hval);
+			response.headers.set(hname, hval);
 			switch(hname.toLowerCase())
 			{
 				case "content-length":
@@ -673,8 +752,9 @@ class Http {
 				}
 			}
 			// prevent buffer accumulation
-			if( len > 10 ) {
-				onError("Invalid chunk");
+			if ( len > 10 ) {
+				this.response.error = "Invalid chunk";
+				onError(this.response.error);
 				return false;
 			}
 			chunk_buf = buf.sub(0,len);
@@ -710,7 +790,7 @@ class Http {
 		The intended usage is to bind it to a custom function:
 		`httpInstance.onData = function(data) { // handle result }`
 	**/
-	public dynamic function onData( data : String ) {
+	public dynamic function onData( data : String ) : Void {
 	}
 
 	/**
@@ -720,7 +800,7 @@ class Http {
 		The intended usage is to bind it to a custom function:
 		`httpInstance.onError = function(msg) { // handle error }`
 	**/
-	public dynamic function onError( msg : String ) {
+	public dynamic function onError( msg : String ) : Void {
 	}
 
 	/**
@@ -730,7 +810,7 @@ class Http {
 		The intended usage is to bind it to a custom function:
 		`httpInstance.onStatus = function(status) { // handle status }`
 	**/
-	public dynamic function onStatus( status : Int ) {
+	public dynamic function onStatus( status : haxe.HttpStatusCode ) : Void {
 	}
 
 #if !flash
@@ -742,8 +822,9 @@ class Http {
 
 		If `url` is null, the result is unspecified.
 	**/
-	public static function requestUrl( url : String ) : String {
+	public static function requestUrl( url : String, ?params : Map<String,String> ) : String {
 		var h = new Http(url);
+		h.params = params;
 	#if js
 		h.async = false;
 	#end

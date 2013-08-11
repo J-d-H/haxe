@@ -40,9 +40,9 @@ class HttpConnection implements Connection implements Dynamic<Connection> {
 	}
 
 	public function call( params : Array<Dynamic> ) : Dynamic {
-		var data = null;
+		var response = null;
 		var h = new haxe.Http(__url);
-		#if js
+		#if (js || cs)
 			h.async = false;
 		#end
 		#if (neko && no_remoting_shutdown)
@@ -56,13 +56,12 @@ class HttpConnection implements Connection implements Dynamic<Connection> {
 		s.serialize(params);
 		h.setHeader("X-Haxe-Remoting","1");
 		h.setParameter("__x",s.toString());
-		h.onData = function(d) { data = d; };
+		h.onData = function(d) { response = d; };
 		h.onError = function(e) { throw e; };
 		h.request(true);
-		if( data.substr(0,3) != "hxr" )
-			throw "Invalid response : '"+data+"'";
-		data = data.substr(3);
-		return new haxe.Unserializer(data).unserialize();
+		if( response.substr(0,3) != "hxr" )
+			throw "Invalid response : '"+response+"'";
+		return new haxe.Unserializer(response.substr(3)).unserialize();
 	}
 
 	#if (js || neko || php)

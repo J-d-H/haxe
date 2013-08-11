@@ -1,6 +1,9 @@
 package cs.system;
 
-typedef AsyncCallback = IAsyncResult -> Void;
+@:native("System.AsyncCallback")
+extern class AsyncCallback {
+	public function new (asyncResult : IAsyncResult -> Void);
+}
 
 @:native("System.IAsyncResult") 
 extern class IAsyncResult {

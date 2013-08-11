@@ -37,7 +37,7 @@ class HttpAsyncConnection implements AsyncConnection implements Dynamic<AsyncCon
 		return c;
 	}
 
-	public function setErrorHandler(h) {
+	public function setErrorHandler(h) : Void {
 		__data.error = h;
 	}
 
