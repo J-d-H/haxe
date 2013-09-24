@@ -1,0 +1,4 @@
+[submodule "libs"]
+	path = libs
+	url = ../ocamllibs
+	branch = master
