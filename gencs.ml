@@ -977,6 +977,7 @@ let configure gen =
 	let is_extern_prop t name = match field_access gen t name with
 		| FClassField(_,_,decl,v,_,t,_) ->
 			Type.is_extern_field v && decl.cl_extern && not (is_hxgen (TClassDecl decl))
+		| FNotFound -> true (* Don't know if there is a better way to detect net_lib properties *)
 		| _ -> false
 	in
 
