@@ -182,6 +182,30 @@ import cs.system.Type;
 	}
 
 	@:functionCode('
+			System.IConvertible cv1 = obj as System.IConvertible;
+			if (cv1 != null)
+			{
+                switch (cv1.GetTypeCode())
+                {
+                    case System.TypeCode.Double:
+                        double d = (double)obj;
+
+				        return d >= uint.MinValue && d <= uint.MaxValue && d == ( (uint)d );
+                    case System.TypeCode.UInt32:
+                        return true;
+                    default:
+                        return false;
+                }
+
+			}
+			return false;
+	')
+	public static function isUInt(obj:Dynamic):Bool
+	{
+		return false;
+	}
+
+	@:functionCode('
 			if (v1 == v2) return 0;
 			if (v1 == null) return -1;
 			if (v2 == null) return 1;
@@ -238,12 +262,11 @@ import cs.system.Type;
 					double d1 = (double) v1;
 					double d2 = cv2.ToDouble(null);
 
-					if (double.IsInfinity(d1) || double.IsInfinity(d2))
-						return (d1 < d2) ? -1 : (d1 > d2) ? 1 : 0;
-					else
-						return (int) (d1 - d2);
+          return (d1 < d2) ? -1 : (d1 > d2) ? 1 : 0;
 					default:
-						return ((int) (cv1.ToDouble(null) - cv2.ToDouble(null)));
+            double d1d = cv1.ToDouble(null);
+            double d2d = cv2.ToDouble(null);
+            return (d1d < d2d) ? -1 : (d1d > d2d) ? 1 : 0;
 				}
 			}
 

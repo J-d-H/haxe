@@ -25,14 +25,14 @@
 
   This module intends to be a common set of utilities common to all targets.
 
-  It's intended to provide a set of tools to be able to make targets in haXe more easily, and to
+  It's intended to provide a set of tools to be able to make targets in Haxe more easily, and to
   allow the programmer to have more control of how the target language will handle the program.
 
   For example, as of now, the hxcpp target, while greatly done, relies heavily on cpp's own operator
   overloading, and implicit conversions, which make it very hard to deliver a similar solution for languages
   that lack these features.
 
-  So this little framework is here so you can manipulate the HaXe AST and start bringing the AST closer
+  So this little framework is here so you can manipulate the Haxe AST and start bringing the AST closer
   to how it's intenteded to be in your host language.
 
   Rules
@@ -109,8 +109,8 @@ struct
 
   let mk_heexpr = function
     | TConst _ -> 0 | TLocal _ -> 1 | TArray _ -> 3 | TBinop _ -> 4 | TField _ -> 5 | TTypeExpr _ -> 7 | TParenthesis _ -> 8 | TObjectDecl _ -> 9
-    | TArrayDecl _ -> 10 | TCall _ -> 11 | TNew _ -> 12 | TUnop _ -> 13 | TFunction _ -> 14 | TVars _ -> 15 | TBlock _ -> 16 | TFor _ -> 17 | TIf _ -> 18 | TWhile _ -> 19
-    | TSwitch _ -> 20 | TMatch _ -> 21 | TTry _ -> 22 | TReturn _ -> 23 | TBreak -> 24 | TContinue -> 25 | TThrow _ -> 26 | TCast _ -> 27
+    | TArrayDecl _ -> 10 | TCall _ -> 11 | TNew _ -> 12 | TUnop _ -> 13 | TFunction _ -> 14 | TVar _ -> 15 | TBlock _ -> 16 | TFor _ -> 17 | TIf _ -> 18 | TWhile _ -> 19
+    | TSwitch _ -> 20 | TPatMatch _ -> 21 | TTry _ -> 22 | TReturn _ -> 23 | TBreak -> 24 | TContinue -> 25 | TThrow _ -> 26 | TCast _ -> 27 | TMeta _ -> 28 | TEnumParameter _ -> 29
 
   let mk_heetype = function
     | TMono _ -> 0 | TEnum _ -> 1 | TInst _ -> 2 | TType _ -> 3 | TFun _ -> 4
@@ -1022,7 +1022,14 @@ let dump_descriptor gen name path_s module_s =
         SourceWriter.write w s;
         SourceWriter.newline w;
       end
-    ) gen.gcon.java_libs;
+    ) gen.gcon.java_libs
+	else if Common.platform gen.gcon Cs then
+    List.iter (fun (s,std,_,_) ->
+      if not std then begin
+        SourceWriter.write w s;
+        SourceWriter.newline w;
+      end
+    ) gen.gcon.net_libs;
   SourceWriter.write w "end libs";
 
   let contents = SourceWriter.contents w in
@@ -1088,7 +1095,7 @@ let ensure_local gen block name e =
     | TLocal _ -> e
     | _ ->
       let var = mk_temp gen name e.etype in
-      block := { e with eexpr = TVars([ var, Some e ]); etype = gen.gcon.basic.tvoid; } :: !block;
+      block := { e with eexpr = TVar(var, Some e); etype = gen.gcon.basic.tvoid; } :: !block;
       { e with eexpr = TLocal var }
 
 let reset_temps () = tmp_count := 0
@@ -1194,7 +1201,7 @@ let mk_class_field name t public pos kind params =
 (* This is so we can use class parameters on function parameters, without running the risk of name clash *)
 (* between both *)
 let map_param cl =
-  let ret = mk_class cl.cl_module cl.cl_path cl.cl_pos in
+  let ret = mk_class cl.cl_module (fst cl.cl_path, snd cl.cl_path ^ "_c") cl.cl_pos in
   ret.cl_implements <- cl.cl_implements;
   ret.cl_kind <- cl.cl_kind;
   ret
@@ -1729,7 +1736,7 @@ struct
       set_new_create_empty gen empty_ctor_expr;
 
       let basic = gen.gcon.basic in
-      let should_change cl = not cl.cl_interface && (not cl.cl_extern || is_hxgen (TClassDecl cl)) in
+      let should_change cl = not cl.cl_interface && (not cl.cl_extern || is_hxgen (TClassDecl cl)) && (match cl.cl_kind with KAbstractImpl _ -> false | _ -> true) in
       let static_ctor_name = gen.gmk_internal_name "hx" "ctor" in
       let msize = List.length gen.gcon.types in
       let processed, empty_ctors = Hashtbl.create msize, Hashtbl.create msize in
@@ -1905,7 +1912,7 @@ struct
               let local = mk_local v e.epos in
               (match !add_expr with
                 | None ->
-                  add_expr := Some { e with eexpr = TVars([v, Some this]) }
+                  add_expr := Some { e with eexpr = TVar(v, Some this) }
                 | Some _ -> ());
               local
             | TConst TSuper -> assert false
@@ -2131,11 +2138,14 @@ struct
                 let eleft, rest = match e1.eexpr with
                   | TField(ef, f) ->
                     let v = mk_temp gen "dynop" ef.etype in
-                    { e1 with eexpr = TField(mk_local v ef.epos, f) }, [ { eexpr = TVars([v,Some (run ef)]); etype = basic.tvoid; epos = ef.epos } ]
+                    { e1 with eexpr = TField(mk_local v ef.epos, f) }, [ { eexpr = TVar(v,Some (run ef)); etype = basic.tvoid; epos = ef.epos } ]
                   | TArray(e1a, e2a) ->
                     let v = mk_temp gen "dynop" e1a.etype in
                     let v2 = mk_temp gen "dynopi" e2a.etype in
-                    { e1 with eexpr = TArray(mk_local v e1a.epos, mk_local v2 e2a.epos) }, [ { eexpr = TVars([v,Some (run e1a); v2, Some (run e2a)]); etype = basic.tvoid; epos = e1.epos } ]
+                    { e1 with eexpr = TArray(mk_local v e1a.epos, mk_local v2 e2a.epos) }, [
+                      { eexpr = TVar(v,Some (run e1a)); etype = basic.tvoid; epos = e1.epos };
+                      { eexpr = TVar(v2, Some (run e2a)); etype = basic.tvoid; epos = e1.epos }
+                    ]
                   | _ -> assert false
                 in
                 { e with
@@ -2184,32 +2194,29 @@ struct
             let etype, one = get_etype_one e in
             let op = (match op with Increment -> OpAdd | Decrement -> OpSub | _ -> assert false) in
 
-            let tvars, getvar =
+            let var, getvar =
               match e1.eexpr with
                 | TField(fexpr, field) ->
                   let tmp = mk_temp gen "getvar" fexpr.etype in
-                  let tvars = [tmp, Some(run fexpr)] in
-                  (tvars, { eexpr = TField( { fexpr with eexpr = TLocal(tmp) }, field); etype = etype; epos = e1.epos })
+                  let var = { eexpr = TVar(tmp, Some(run fexpr)); etype = gen.gcon.basic.tvoid; epos = e.epos } in
+                  (Some var, { eexpr = TField( { fexpr with eexpr = TLocal(tmp) }, field); etype = etype; epos = e1.epos })
                 | _ ->
-                  ([], e1)
+                  (None, e1)
             in
 
             (match flag with
               | Prefix ->
-                let tvars = match tvars with
-                  | [] -> []
-                  | _ -> [{ eexpr = TVars(tvars); etype = gen.gcon.basic.tvoid; epos = e.epos }]
-                in
-                let block = tvars @
+                let block = (match var with | Some e -> [e] | None -> []) @
                 [
                   mk_cast etype { e with eexpr = TBinop(OpAssign, getvar,{ eexpr = TBinop(op, mk_cast etype getvar, one); etype = etype; epos = e.epos }); etype = getvar.etype; }
-                ] in
+                ]
+                in
                 { eexpr = TBlock(block); etype = etype; epos = e.epos }
               | Postfix ->
                 let ret = mk_temp gen "ret" etype in
-                let tvars = { eexpr = TVars(tvars @ [ret, Some (mk_cast etype getvar)]); etype = gen.gcon.basic.tvoid; epos = e.epos } in
+                let vars = (match var with Some e -> [e] | None -> []) @ [{ eexpr = TVar(ret, Some (mk_cast etype getvar)); etype = gen.gcon.basic.tvoid; epos = e.epos }] in
                 let retlocal = { eexpr = TLocal(ret); etype = etype; epos = e.epos } in
-                let block = tvars ::
+                let block = vars @
                 [
                 { e with eexpr = TBinop(OpAssign, getvar, { eexpr = TBinop(op, retlocal, one); etype = getvar.etype; epos = e.epos }) };
                 retlocal
@@ -2506,14 +2513,14 @@ struct
             let val_local = { earray with eexpr = TLocal(val_v) } in
             let ret_local = { earray with eexpr = TLocal(ret_v) } in
             (* var idx = 1; var val = x._get(idx); var ret = val++; x._set(idx, val); ret; *)
-            block := { eexpr = TVars(
-                [
-                  val_v, Some(mk_get earray arr_local idx_local); (* var val = x._get(idx) *)
-                  ret_v, Some { e with eexpr = TUnop(op, flag, val_local) } (* var ret = val++ *)
-                ]);
-                etype = gen.gcon.basic.tvoid;
-                epos = e2a.epos
-              } :: !block;
+            block := { eexpr = TVar(val_v, Some(mk_get earray arr_local idx_local)); (* var val = x._get(idx) *)
+                       etype = gen.gcon.basic.tvoid;
+                       epos = e2a.epos
+                     } :: !block;
+            block := { eexpr = TVar(ret_v, Some { e with eexpr = TUnop(op, flag, val_local) }); (* var ret = val++ *)
+                        etype = gen.gcon.basic.tvoid;
+                        epos = e2a.epos
+                     } :: !block;
             block := (mk_set e arr_local idx_local val_local) (*x._set(idx,val)*) :: !block;
             block := ret_local :: !block;
             { e with eexpr = TBlock (List.rev !block) }
@@ -2601,7 +2608,7 @@ struct
                   | None -> *) mk_temp gen "catchall" t_dynamic
                   (*| Some (v,_) -> v*)
                 in
-                let catchall_decl = { eexpr = TVars([catchall_var, Some(temp_local)]); etype=gen.gcon.basic.tvoid; epos = pos } in
+                let catchall_decl = { eexpr = TVar(catchall_var, Some(temp_local)); etype=gen.gcon.basic.tvoid; epos = pos } in
                 let catchall_local = { eexpr = TLocal(catchall_var); etype = t_dynamic; epos = pos } in
                 (* if it is of type wrapper_type, unwrap it *)
                 let std_is = mk_static_field_access (get_cl (get_type gen ([],"Std"))) "is" (TFun(["v",false,t_dynamic;"cl",false,mt_to_t (get_type gen ([], "Class")) [t_dynamic]],gen.gcon.basic.tbool)) pos in
@@ -2613,13 +2620,13 @@ struct
                 let rec loop must_wrap_catches = match must_wrap_catches with
                   | (vcatch,catch) :: tl ->
                     { eexpr = TIf(mk_std_is vcatch.v_type catch.epos,
-                      { eexpr = TBlock({ eexpr=TVars([vcatch, Some(mk_cast vcatch.v_type catchall_local)]); etype=gen.gcon.basic.tvoid; epos=catch.epos } :: [catch] ); etype = catch.etype; epos = catch.epos },
+                      { eexpr = TBlock({ eexpr=TVar(vcatch, Some(mk_cast vcatch.v_type catchall_local)); etype=gen.gcon.basic.tvoid; epos=catch.epos } :: [catch] ); etype = catch.etype; epos = catch.epos },
                       Some (loop tl));
                     etype = catch.etype; epos = catch.epos }
                   | [] ->
                     match catchall with
                       | Some (v,s) ->
-                        Codegen.concat { eexpr = TVars([v, Some(catchall_local)]); etype = gen.gcon.basic.tvoid; epos = pos } s
+                        Codegen.concat { eexpr = TVar(v, Some(catchall_local)); etype = gen.gcon.basic.tvoid; epos = pos } s
                       | None ->
                         mk_block (rethrow_expr temp_local)
                 in
@@ -2737,11 +2744,29 @@ struct
       * one that will actually handle the anonymous functions themselves.
       * one that will transform calling a dynamic function. So for example, dynFunc(arg1, arg2) might turn into dynFunc.apply2(arg1, arg2);
       ( suspended ) * an option to match papplied functions
+			* handling parameterized anonymous function declaration (optional - tparam_anon_decl and tparam_anon_acc)
   *)
 
-  let traverse gen (transform_closure:texpr->texpr->string->texpr) (handle_anon_func:texpr->tfunc->texpr) (dynamic_func_call:texpr->texpr) e =
+  let traverse gen ?tparam_anon_decl ?tparam_anon_acc (transform_closure:texpr->texpr->string->texpr) (handle_anon_func:texpr->tfunc->texpr) (dynamic_func_call:texpr->texpr) e =
     let rec run e =
       match e.eexpr with
+				(* parameterized functions handling *)
+				| TVar(vv, ve) -> (match tparam_anon_decl with
+					| None -> Type.map_expr run e
+					| Some tparam_anon_decl ->
+            (match (vv, ve) with
+							| ({ v_extra = Some( _ :: _, _) } as v), Some ({ eexpr = TFunction tf } as f)
+							| ({ v_extra = Some( _ :: _, _) } as v), Some { eexpr = TArrayDecl([{ eexpr = TFunction tf } as f]) } -> (* captured transformation *)
+								ignore(tparam_anon_decl v f { tf with tf_expr = run tf.tf_expr });
+                { e with eexpr = TBlock([]) }
+							| _ ->
+                Type.map_expr run { e with eexpr = TVar(vv, ve) })
+            )
+				| TLocal ({ v_extra = Some( _ :: _, _) } as v)
+				| TArray ({ eexpr = TLocal ({ v_extra = Some( _ :: _, _) } as v) }, _) -> (* captured transformation *)
+					(match tparam_anon_acc with
+					| None -> Type.map_expr run e
+					| Some tparam_anon_acc -> tparam_anon_acc v e)
         | TCall( { eexpr = TField(_, FEnum _) }, _ ) ->
           Type.map_expr run e
         (* if a TClosure is being call immediately, there's no need to convert it to a TClosure *)
@@ -2846,8 +2871,14 @@ struct
           List.iter (fun (v,_) -> check_params v.v_type; Hashtbl.add ignored v.v_id v) tf.tf_args;
           check_params tf.tf_type;
           Type.iter traverse expr
-        | TVars (vars) ->
-          List.iter (fun (v, opt) -> check_params v.v_type; Hashtbl.add ignored v.v_id v; ignore(Option.map traverse opt)) vars;
+        | TVar (v, opt) ->
+					(match v.v_extra with
+  					| Some(_ :: _, _) -> ()
+  					| _ ->
+  						check_params v.v_type);
+					Hashtbl.add ignored v.v_id v;
+					ignore(Option.map traverse opt)
+        | TLocal { v_extra = Some(_ :: _,_) } -> ()
         | TLocal(( { v_capture = true } ) as v) ->
           (if not (Hashtbl.mem ignored v.v_id || Hashtbl.mem ret v.v_id) then begin check_params v.v_type; Hashtbl.replace ret v.v_id expr end);
         | _ -> Type.iter traverse expr
@@ -2888,148 +2919,184 @@ struct
     ) cfs;
 
     parent_func_class.cl_ordered_fields <- (List.filter (fun cf -> cf.cf_name <> "new") cfs) @ parent_func_class.cl_ordered_fields;
-
     ft.func_class <- parent_func_class;
+
+		let handle_anon_func fexpr tfunc : texpr * (tclass * texpr list) =
+			(* get all captured variables it uses *)
+			let captured_ht, tparams = get_captured fexpr in
+			let captured = Hashtbl.fold (fun _ e acc -> e :: acc) captured_ht [] in
+
+			(*let cltypes = List.map (fun cl -> (snd cl.cl_path, TInst(map_param cl, []) )) tparams in*)
+			let cltypes = List.map (fun cl -> (snd cl.cl_path, TInst(cl, []) )) tparams in
+
+			(* create a new class that extends abstract function class, with a ctor implementation that will setup all captured variables *)
+			let cfield = match ft.fgen.gcurrent_classfield with
+				| None -> "Anon"
+				| Some cf -> cf.cf_name
+			in
+			let cur_line = Lexer.get_error_line fexpr.epos in
+			let path = (fst ft.fgen.gcurrent_path, Printf.sprintf "%s_%s_%d__Fun" (snd ft.fgen.gcurrent_path) cfield cur_line) in
+			let cls = mk_class (get ft.fgen.gcurrent_class).cl_module path tfunc.tf_expr.epos in
+			cls.cl_module <- (get ft.fgen.gcurrent_class).cl_module;
+			cls.cl_types <- cltypes;
+
+			let mk_this v pos =
+				{
+					(mk_field_access gen { eexpr = TConst TThis; etype = TInst(cls, List.map snd cls.cl_types); epos = pos } v.v_name pos)
+					with etype = v.v_type
+				}
+			in
+
+			let mk_this_assign v pos =
+			{
+				eexpr = TBinop(OpAssign, mk_this v pos, { eexpr = TLocal(v); etype = v.v_type; epos = pos });
+				etype = v.v_type;
+				epos = pos
+			} in
+
+			(* mk_class_field name t public pos kind params *)
+			let ctor_args, ctor_sig, ctor_exprs = List.fold_left (fun (ctor_args, ctor_sig, ctor_exprs) lexpr ->
+				match lexpr.eexpr with
+					| TLocal(v) ->
+						let cf = mk_class_field v.v_name v.v_type false lexpr.epos (Var({ v_read = AccNormal; v_write = AccNormal; })) [] in
+						cls.cl_fields <- PMap.add v.v_name cf cls.cl_fields;
+						cls.cl_ordered_fields <- cf :: cls.cl_ordered_fields;
+
+						let ctor_v = alloc_var v.v_name v.v_type in
+						((ctor_v, None) :: ctor_args, (v.v_name, false, v.v_type) :: ctor_sig, (mk_this_assign v cls.cl_pos) :: ctor_exprs)
+					| _ -> assert false
+			) ([],[],[]) captured in
+
+			(* change all captured variables to this.capturedVariable *)
+			let rec change_captured e =
+				match e.eexpr with
+					| TLocal( ({ v_capture = true }) as v ) when Hashtbl.mem captured_ht v.v_id ->
+						mk_this v e.epos
+					| _ -> Type.map_expr change_captured e
+			in
+			let func_expr = change_captured tfunc.tf_expr in
+
+			let invoke_field, super_args = ft.closure_to_classfield { tfunc with tf_expr = func_expr } fexpr.etype fexpr.epos in
+
+
+			(* create the constructor *)
+			(* todo properly abstract how type var is set *)
+
+			cls.cl_super <- Some(parent_func_class, []);
+			let pos = cls.cl_pos in
+			let super_call =
+			{
+				eexpr = TCall({ eexpr = TConst(TSuper); etype = TInst(parent_func_class,[]); epos = pos }, super_args);
+				etype = ft.fgen.gcon.basic.tvoid;
+				epos = pos;
+			} in
+
+			let ctor_type = (TFun(ctor_sig, ft.fgen.gcon.basic.tvoid)) in
+			let ctor = mk_class_field "new" ctor_type true cls.cl_pos (Method(MethNormal)) [] in
+			ctor.cf_expr <- Some(
+			{
+				eexpr = TFunction(
+				{
+					tf_args = ctor_args;
+					tf_type = ft.fgen.gcon.basic.tvoid;
+					tf_expr = { eexpr = TBlock(super_call :: ctor_exprs); etype = ft.fgen.gcon.basic.tvoid; epos = cls.cl_pos }
+				});
+				etype = ctor_type;
+				epos = cls.cl_pos;
+			});
+			cls.cl_constructor <- Some(ctor);
+
+			(* add invoke function to the class *)
+			cls.cl_ordered_fields <- invoke_field :: cls.cl_ordered_fields;
+			cls.cl_fields <- PMap.add invoke_field.cf_name invoke_field cls.cl_fields;
+			cls.cl_overrides <- invoke_field :: cls.cl_overrides;
+
+			(* add this class to the module with gadd_to_module *)
+			ft.fgen.gadd_to_module (TClassDecl(cls)) priority;
+
+	(* if there are no captured variables, we can create a cache so subsequent calls don't need to create a new function *)
+	match captured, tparams with
+		| [], [] ->
+			let cache_var = ft.fgen.gmk_internal_name "hx" "current" in
+			let cache_cf = mk_class_field cache_var (TInst(cls,[])) false func_expr.epos (Var({ v_read = AccNormal; v_write = AccNormal })) [] in
+			cls.cl_ordered_statics <- cache_cf :: cls.cl_ordered_statics;
+			cls.cl_statics <- PMap.add cache_var cache_cf cls.cl_statics;
+
+			(* if (FuncClass.hx_current != null) FuncClass.hx_current; else (FuncClass.hx_current = new FuncClass()); *)
+
+			(* let mk_static_field_access cl field fieldt pos = *)
+			let hx_current = mk_static_field_access cls cache_var (TInst(cls,[])) func_expr.epos in
+
+			let pos = func_expr.epos in
+			{ fexpr with
+				eexpr = TIf(
+					{
+						eexpr = TBinop(OpNotEq, hx_current, null (TInst(cls,[])) pos);
+						etype = ft.fgen.gcon.basic.tbool;
+						epos = pos;
+					},
+					hx_current,
+					Some(
+					{
+						eexpr = TBinop(OpAssign, hx_current, { fexpr with eexpr = TNew(cls, [], captured) });
+						etype = (TInst(cls,[]));
+						epos = pos;
+					}))
+			}, (cls,captured)
+		| _ ->
+			(* change the expression so it will be a new "added class" ( captured variables arguments ) *)
+			{ fexpr with eexpr = TNew(cls, List.map (fun cl -> TInst(cl,[])) tparams, List.rev captured) }, (cls,captured)
+		in
+
+		let tvar_to_cdecl = Hashtbl.create 0 in
 
     traverse
       ft.fgen
+			~tparam_anon_decl:(fun v e fn ->
+				let _, info = handle_anon_func e fn in
+				Hashtbl.add tvar_to_cdecl v.v_id info
+			)
+			~tparam_anon_acc:(fun v e -> try
+				let cls, captured = Hashtbl.find tvar_to_cdecl v.v_id in
+				let types = match v.v_extra with
+					| Some(t,_) -> t
+					| _ -> assert false
+				in
+				let monos = List.map (fun _ -> mk_mono()) types in
+				let vt = match follow v.v_type with
+					| TInst(_, [v]) -> v
+					| v -> v
+				in
+				let et = match follow e.etype with
+					| TInst(_, [v]) -> v
+					| v -> v
+				in
+				let original = apply_params types monos vt in
+				unify et original;
+
+				let same_cl t1 t2 = match follow t1, follow t2 with
+					| TInst(c,_), TInst(c2,_) -> c == c2
+					| _ -> false
+				in
+				let passoc = List.map2 (fun (_,t) m -> t,m) types monos in
+				let cltparams = List.map (fun (_,t) ->
+					try
+						snd (List.find (fun (t2,_) -> same_cl t t2) passoc)
+					with | Not_found -> t) cls.cl_types
+				in
+				{ e with eexpr = TNew(cls, cltparams, captured) }
+			with
+				| Not_found ->
+				gen.gcon.warning "This expression may be invalid" e.epos;
+				e
+				| Unify_error el ->
+          List.iter (fun el -> gen.gcon.warning (Typecore.unify_error_msg (print_context()) el) e.epos) el;
+				gen.gcon.warning "This expression may be invalid" e.epos;
+				e
+			)
       (* (transform_closure:texpr->texpr->string->texpr) (handle_anon_func:texpr->tfunc->texpr) (dynamic_func_call:texpr->texpr->texpr list->texpr) *)
       ft.transform_closure
-      (fun fexpr tfunc -> (* (handle_anon_func:texpr->tfunc->texpr) *)
-        (* get all captured variables it uses *)
-        let captured_ht, tparams = get_captured fexpr in
-        let captured = Hashtbl.fold (fun _ e acc -> e :: acc) captured_ht [] in
-
-        (*let cltypes = List.map (fun cl -> (snd cl.cl_path, TInst(map_param cl, []) )) tparams in*)
-        let cltypes = List.map (fun cl -> (snd cl.cl_path, TInst(cl, []) )) tparams in
-
-        (* create a new class that extends abstract function class, with a ctor implementation that will setup all captured variables *)
-        let buf = Buffer.create 72 in
-        ignore (Type.map_expr (fun e ->
-          Buffer.add_string buf (Marshal.to_string (ExprHashtblHelper.mk_type e) [Marshal.Closures]);
-          e
-        ) tfunc.tf_expr);
-        let digest = Digest.to_hex (Digest.string (Buffer.contents buf)) in
-        let path = (fst ft.fgen.gcurrent_path, "Fun_" ^ (String.sub digest 0 8)) in
-        let cls = mk_class (get ft.fgen.gcurrent_class).cl_module path tfunc.tf_expr.epos in
-        cls.cl_module <- (get ft.fgen.gcurrent_class).cl_module;
-        cls.cl_types <- cltypes;
-
-        let mk_this v pos =
-          {
-            (mk_field_access gen { eexpr = TConst TThis; etype = TInst(cls, List.map snd cls.cl_types); epos = pos } v.v_name pos)
-            with etype = v.v_type
-          }
-        in
-
-        let mk_this_assign v pos =
-        {
-          eexpr = TBinop(OpAssign, mk_this v pos, { eexpr = TLocal(v); etype = v.v_type; epos = pos });
-          etype = v.v_type;
-          epos = pos
-        } in
-
-        (* mk_class_field name t public pos kind params *)
-        let ctor_args, ctor_sig, ctor_exprs = List.fold_left (fun (ctor_args, ctor_sig, ctor_exprs) lexpr ->
-          match lexpr.eexpr with
-            | TLocal(v) ->
-              let cf = mk_class_field v.v_name v.v_type false lexpr.epos (Var({ v_read = AccNormal; v_write = AccNormal; })) [] in
-              cls.cl_fields <- PMap.add v.v_name cf cls.cl_fields;
-              cls.cl_ordered_fields <- cf :: cls.cl_ordered_fields;
-
-              let ctor_v = alloc_var v.v_name v.v_type in
-              ((ctor_v, None) :: ctor_args, (v.v_name, false, v.v_type) :: ctor_sig, (mk_this_assign v cls.cl_pos) :: ctor_exprs)
-            | _ -> assert false
-        ) ([],[],[]) captured in
-
-        (* change all captured variables to this.capturedVariable *)
-        let rec change_captured e =
-          match e.eexpr with
-            | TLocal( ({ v_capture = true }) as v ) when Hashtbl.mem captured_ht v.v_id ->
-              mk_this v e.epos
-            | _ -> Type.map_expr change_captured e
-        in
-        let func_expr = change_captured tfunc.tf_expr in
-
-        let invoke_field, super_args = ft.closure_to_classfield { tfunc with tf_expr = func_expr } fexpr.etype fexpr.epos in
-
-
-        (* create the constructor *)
-        (* todo properly abstract how type var is set *)
-
-        cls.cl_super <- Some(parent_func_class, []);
-        let pos = cls.cl_pos in
-        let super_call =
-        {
-          eexpr = TCall({ eexpr = TConst(TSuper); etype = TInst(parent_func_class,[]); epos = pos }, super_args);
-          etype = ft.fgen.gcon.basic.tvoid;
-          epos = pos;
-        } in
-
-        let ctor_type = (TFun(ctor_sig, ft.fgen.gcon.basic.tvoid)) in
-        let ctor = mk_class_field "new" ctor_type true cls.cl_pos (Method(MethNormal)) [] in
-        ctor.cf_expr <- Some(
-        {
-          eexpr = TFunction(
-          {
-            tf_args = ctor_args;
-            tf_type = ft.fgen.gcon.basic.tvoid;
-            tf_expr = { eexpr = TBlock(super_call :: ctor_exprs); etype = ft.fgen.gcon.basic.tvoid; epos = cls.cl_pos }
-          });
-          etype = ctor_type;
-          epos = cls.cl_pos;
-        });
-        cls.cl_constructor <- Some(ctor);
-
-        (* add invoke function to the class *)
-        cls.cl_ordered_fields <- invoke_field :: cls.cl_ordered_fields;
-        cls.cl_fields <- PMap.add invoke_field.cf_name invoke_field cls.cl_fields;
-        cls.cl_overrides <- invoke_field :: cls.cl_overrides;
-
-        (* add this class to the module with gadd_to_module *)
-        ft.fgen.gadd_to_module (TClassDecl(cls)) priority;
-
-    (* if there are no captured variables, we can create a cache so subsequent calls don't need to create a new function *)
-    match captured, tparams with
-      | [], [] ->
-        let cache_var = ft.fgen.gmk_internal_name "hx" "current" in
-        let cache_cf = mk_class_field cache_var (TInst(cls,[])) false func_expr.epos (Var({ v_read = AccNormal; v_write = AccNormal })) [] in
-        cls.cl_ordered_statics <- cache_cf :: cls.cl_ordered_statics;
-        cls.cl_statics <- PMap.add cache_var cache_cf cls.cl_statics;
-
-        (* if (FuncClass.hx_current != null) FuncClass.hx_current; else (FuncClass.hx_current = new FuncClass()); *)
-
-        (* let mk_static_field_access cl field fieldt pos = *)
-        let hx_current = mk_static_field_access cls cache_var (TInst(cls,[])) func_expr.epos in
-
-        let pos = func_expr.epos in
-        {
-          fexpr with
-
-          eexpr = TIf(
-          {
-            eexpr = TBinop(OpNotEq, hx_current, null (TInst(cls,[])) pos);
-            etype = ft.fgen.gcon.basic.tbool;
-            epos = pos;
-          },
-
-          hx_current,
-
-          Some(
-          {
-            eexpr = TBinop(OpAssign, hx_current, { fexpr with eexpr = TNew(cls, [], captured) });
-            etype = (TInst(cls,[]));
-            epos = pos;
-          }))
-
-        }
-
-      | _ ->
-        (* change the expression so it will be a new "added class" ( captured variables arguments ) *)
-        { fexpr with eexpr = TNew(cls, List.map (fun cl -> TInst(cl,[])) tparams, List.rev captured) }
-
-
-      )
+			(fun e f -> fst (handle_anon_func e f))
       ft.dynamic_fun_call
       (* (dynamic_func_call:texpr->texpr->texpr list->texpr) *)
 
@@ -3153,7 +3220,7 @@ struct
           snd (List.fold_left (fun (count,acc) (v,const) ->
             (count + 1,
               {
-                eexpr = TVars([v, Some(mk_const const ( mk_varray count ) v.v_type)]);
+                eexpr = TVar(v, Some(mk_const const ( mk_varray count ) v.v_type));
                 etype = basic.tvoid;
                 epos = pos;
               } :: acc)
@@ -3170,7 +3237,7 @@ struct
             match args, fargs, dargs with
               | [], [], [] -> acc
               | (v,const) :: args, (vf,_) :: fargs, (vd,_) :: dargs ->
-                let acc = { eexpr = TVars([ v, Some(
+                let acc = { eexpr = TVar(v, Some(
                   {
                     eexpr = TIf(
                       { eexpr = TBinop(Ast.OpEq, mk_local vd pos, undefined pos); etype = basic.tbool; epos = pos },
@@ -3179,7 +3246,7 @@ struct
                     );
                     etype = v.v_type;
                     epos = pos
-                  } ) ]); etype = basic.tvoid; epos = pos } :: acc in
+                  } )); etype = basic.tvoid; epos = pos } :: acc in
                 loop acc args fargs dargs
               | _ -> assert false
           in
@@ -4146,9 +4213,9 @@ struct
                   epos = pos;
                 };
                 (* var new_me = /*special create empty with tparams construct*/ *)
-                { eexpr = TVars([new_me_var, Some(
+                { eexpr = TVar(new_me_var, Some(
                   gen.gtools.rf_create_empty cl params pos
-                )]); etype = gen.gcon.basic.tvoid; epos = pos };
+                )); etype = gen.gcon.basic.tvoid; epos = pos };
                 { eexpr = TFor( (* for (field in Reflect.fields(this)) *)
                   field_var,
                   mk_iterator_access gen gen.gcon.basic.tstring ref_fields,
@@ -4451,7 +4518,7 @@ end;;
   and will unwrap statements where expressions are expected, and vice-versa.
 
   It should be one of the first syntax filters to be applied. As a consequence, it's applied after all filters that add code to the AST, and by being
-  the first of the syntax filters, it will also have the AST retain most of the meaning of normal HaXe code. So it's easier to detect cases which are
+  the first of the syntax filters, it will also have the AST retain most of the meaning of normal Haxe code. So it's easier to detect cases which are
   side-effects free, for example
 
   Any target can make use of this, but there is one requirement: The target must accept null to be set to any kind of variable. For example,
@@ -4460,7 +4527,7 @@ end;;
   dependencies:
     While it's best for Expression Unwrap to delay its execution as much as possible, since theoretically any
     filter can return an expression that needs to be unwrapped, it is also desirable for ExpresionUnwrap to have
-    the AST as close as possible as HaXe's, so it can make some correct predictions (for example, so it can
+    the AST as close as possible as Haxe's, so it can make some correct predictions (for example, so it can
     more accurately know what can be side-effects-free and what can't).
     This way, it will run slightly after the Normal priority, so if you don't say that a syntax filter must run
     before Expression Unwrap, it will run after it.
@@ -4503,7 +4570,7 @@ struct
 
     helpers:
       try_call_unwrap_statement: (returns texpr option)
-        if underlying statement is TBinop(OpAssign/OpAssignOp), or TVars, with the right side being a Statement or a short circuit op, we can call apply_assign.
+        if underlying statement is TBinop(OpAssign/OpAssignOp), or TVar, with the right side being a Statement or a short circuit op, we can call apply_assign.
 
       apply_assign:
         if is TVar, first declare the tvar with default expression = null;
@@ -4544,7 +4611,7 @@ struct
 
       add_assign:
         see if the type is void. If it is, just add_statement the expression argument, and return a null value
-        else create a new variable, set TVars with Some() with the expression argument, add TVar with add_statement, and return the TLocal of this expression.
+        else create a new variable, set TVar with Some() with the expression argument, add TVar with add_statement, and return the TLocal of this expression.
 
       map_problematic_expr:
         call expr_stat_map on statement with problematic_expression_unwrap
@@ -4582,7 +4649,7 @@ struct
       | _ -> e
 
   (* must be called in a statement. Will execute fn whenever an expression (not statement) is expected *)
-  let expr_stat_map fn (expr:texpr) =
+  let rec expr_stat_map fn (expr:texpr) =
     match (no_paren expr).eexpr with
       | TBinop ( (Ast.OpAssign as op), left_e, right_e )
       | TBinop ( (Ast.OpAssignOp _ as op), left_e, right_e ) ->
@@ -4592,8 +4659,8 @@ struct
         { expr with eexpr = TCall(fn left_e, List.map fn params) }
       | TNew(cl, tparams, params) ->
         { expr with eexpr = TNew(cl, tparams, List.map fn params) }
-      | TVars(vars) ->
-        { expr with eexpr = TVars( List.map (fun (v,eopt) -> (v, Option.map fn eopt)) vars ) }
+      | TVar(v,eopt) ->
+        { expr with eexpr = TVar(v, Option.map fn eopt) }
       | TFor (v,cond,block) ->
         { expr with eexpr = TFor(v, fn cond, block) }
       | TIf(cond,eif,eelse) ->
@@ -4602,8 +4669,8 @@ struct
         { expr with eexpr = TWhile(fn cond, block, flag) }
       | TSwitch(cond, el_block_l, default) ->
         { expr with eexpr = TSwitch( fn cond, List.map (fun (el,block) -> (List.map fn el, block)) el_block_l, default ) }
-      | TMatch(cond, enum, cases, default) ->
-        { expr with eexpr = TMatch(fn cond, enum, cases, default) }
+(*       | TMatch(cond, enum, cases, default) ->
+        { expr with eexpr = TMatch(fn cond, enum, cases, default) } *)
       | TReturn(eopt) ->
         { expr with eexpr = TReturn(Option.map fn eopt) }
       | TThrow (texpr) ->
@@ -4614,6 +4681,8 @@ struct
       | TUnop (Ast.Increment, _, _)
       | TUnop (Ast.Decrement, _, _) (* unop is a special case because the haxe compiler won't let us generate complex expressions with Increment/Decrement *)
       | TBlock _ -> expr (* there is no expected expression here. Only statements *)
+      | TMeta(m,e) ->
+        { expr with eexpr = TMeta(m,expr_stat_map fn e) }
       | _ -> assert false (* we only expect valid statements here. other expressions aren't valid statements *)
 
   let is_expr = function | Expression _ -> true | _ -> false
@@ -4655,21 +4724,22 @@ struct
       | TArray _
       | TBinop _
       | TField _
+      | TEnumParameter _
       | TTypeExpr _
       | TObjectDecl _
       | TArrayDecl _
       | TFunction _
       | TCast _
       | TUnop _ -> Expression (expr)
-      | TParenthesis p -> shallow_expr_type p
+      | TParenthesis p | TMeta(_,p) -> shallow_expr_type p
       | TBlock ([e]) -> shallow_expr_type e
       | TCall _
-      | TVars _
+      | TVar _
       | TBlock _
       | TFor _
       | TWhile _
       | TSwitch _
-      | TMatch _
+      | TPatMatch _
       | TTry _
       | TReturn _
       | TBreak
@@ -4711,6 +4781,7 @@ struct
           | TArray (e1,e2) ->
             aggregate true [e1;e2]
           | TParenthesis e
+          | TMeta(_,e)
           | TField (e,_) ->
             aggregate true [e]
           | TArrayDecl (el) ->
@@ -4781,7 +4852,7 @@ struct
         null expr.etype expr.epos
       | _ ->
         let var = mk_temp gen "stmt" expr.etype in
-        let tvars = { expr with eexpr = TVars([var,Some(expr)]) } in
+        let tvars = { expr with eexpr = TVar(var,Some(expr)) } in
         let local = { expr with eexpr = TLocal(var) } in
         add_statement tvars;
         local
@@ -4793,8 +4864,8 @@ struct
         { right with eexpr = TBlock(apply_assign_block assign_fun el) }
       | TSwitch (cond, elblock_l, default) ->
         { right with eexpr = TSwitch(cond, List.map (fun (el,block) -> (el, mk_get_block assign_fun block)) elblock_l, Option.map (mk_get_block assign_fun) default) }
-      | TMatch (cond, ep, il_vlo_e_l, default) ->
-        { right with eexpr = TMatch(cond, ep, List.map (fun (il,vlo,e) -> (il,vlo,mk_get_block assign_fun e)) il_vlo_e_l, Option.map (mk_get_block assign_fun) default) }
+(*       | TMatch (cond, ep, il_vlo_e_l, default) ->
+        { right with eexpr = TMatch(cond, ep, List.map (fun (il,vlo,e) -> (il,vlo,mk_get_block assign_fun e)) il_vlo_e_l, Option.map (mk_get_block assign_fun) default) } *)
       | TTry (block, catches) ->
         { right with eexpr = TTry(mk_get_block assign_fun block, List.map (fun (v,block) -> (v,mk_get_block assign_fun block) ) catches) }
       | TIf (cond,eif,eelse) ->
@@ -4805,7 +4876,7 @@ struct
       | TReturn _
       | TBreak
       | TContinue -> right
-      | TParenthesis p ->
+      | TParenthesis p | TMeta(_,p) ->
         apply_assign assign_fun p
       | _ ->
         match follow right.etype with
@@ -4824,7 +4895,7 @@ struct
       match expr.eexpr with
         | TBinop ( (Ast.OpBoolAnd as op), left, right) ->
           let var = mk_temp gen "boolv" right.etype in
-          let tvars = { right with eexpr = TVars([var, Some( { right with eexpr = TConst(TBool false); etype = gen.gcon.basic.tbool } )]); etype = gen.gcon.basic.tvoid } in
+          let tvars = { right with eexpr = TVar(var, Some( { right with eexpr = TConst(TBool false); etype = gen.gcon.basic.tbool } )); etype = gen.gcon.basic.tvoid } in
           let local = { right with eexpr = TLocal(var) } in
 
           let mapped_left, ret_acc = loop ( (local, { right with eexpr = TBinop(Ast.OpAssign, local, right) } ) :: acc) left in
@@ -4839,7 +4910,7 @@ struct
           in
 
           let var = mk_temp gen "boolv" right.etype in
-          let tvars = { right with eexpr = TVars([var, Some( { right with eexpr = TConst(TBool false); etype = gen.gcon.basic.tbool } )]); etype = gen.gcon.basic.tvoid } in
+          let tvars = { right with eexpr = TVar(var, Some( { right with eexpr = TConst(TBool false); etype = gen.gcon.basic.tbool } )); etype = gen.gcon.basic.tvoid } in
           let local = { right with eexpr = TLocal(var) } in
           add_statement tvars;
 
@@ -4847,7 +4918,7 @@ struct
         | _ when acc = [] -> assert false
         | _ ->
           let var = mk_temp gen "boolv" expr.etype in
-          let tvars = { expr with eexpr = TVars([var, Some( { expr with etype = gen.gcon.basic.tbool } )]); etype = gen.gcon.basic.tvoid } in
+          let tvars = { expr with eexpr = TVar(var, Some( { expr with etype = gen.gcon.basic.tbool } )); etype = gen.gcon.basic.tvoid } in
           let local = { expr with eexpr = TLocal(var) } in
 
           let last_local = ref local in
@@ -4889,7 +4960,7 @@ struct
         | TBinop ( (Ast.OpBoolAnd as op), left, right)
         | TBinop ( (Ast.OpBoolOr as op), left, right) ->
           let var = mk_temp gen "boolv" left.etype in
-          let tvars = { left with eexpr = TVars([var, if is_first then Some(left) else Some( { left with eexpr = TConst(TBool false) } )]); etype = gen.gcon.basic.tvoid } in
+          let tvars = { left with eexpr = TVar([var, if is_first then Some(left) else Some( { left with eexpr = TConst(TBool false) } )]); etype = gen.gcon.basic.tvoid } in
           let local = { left with eexpr = TLocal(var) } in
           if not is_first then begin
             last_block := !last_block @ [ { left with eexpr = TBinop(Ast.OpAssign, local, left) } ]
@@ -4906,7 +4977,7 @@ struct
         | _ when is_first -> assert false
         | _ ->
           let var = mk_temp gen "boolv" expr.etype in
-          let tvars = { expr with eexpr = TVars([var, Some ( { expr with eexpr = TConst(TBool false) } ) ]); etype = gen.gcon.basic.tvoid } in
+          let tvars = { expr with eexpr = TVar([var, Some ( { expr with eexpr = TConst(TBool false) } ) ]); etype = gen.gcon.basic.tvoid } in
           let local = { expr with eexpr = TLocal(var) } in
           last_block := !last_block @ [ { expr with eexpr = TBinop(Ast.OpAssign, local, expr) } ];
           add_statement tvars;
@@ -4985,19 +5056,19 @@ struct
       | TBinop((Ast.OpAssignOp _ as op),left,({ eexpr = TBinop(Ast.OpBoolOr,_,_) } as right) ) ->
         let right = short_circuit_op_unwrap gen add_statement right in
         Some { expr with eexpr = TBinop(op, check_left left, right) }
-      | TVars([v,Some({ eexpr = TBinop(Ast.OpBoolAnd,_,_) } as right)])
-      | TVars([v,Some({ eexpr = TBinop(Ast.OpBoolOr,_,_) } as right)]) ->
+      | TVar(v,Some({ eexpr = TBinop(Ast.OpBoolAnd,_,_) } as right))
+      | TVar(v,Some({ eexpr = TBinop(Ast.OpBoolOr,_,_) } as right)) ->
         let right = short_circuit_op_unwrap gen add_statement right in
-        Some { expr with eexpr = TVars([v, Some(right)]) }
-      | TVars([v,Some(right)]) when shallow_expr_type right = Statement ->
-        add_statement ({ expr with eexpr = TVars([v, Some(null right.etype right.epos)]) });
+        Some { expr with eexpr = TVar(v, Some(right)) }
+      | TVar(v,Some(right)) when shallow_expr_type right = Statement ->
+        add_statement ({ expr with eexpr = TVar(v, Some(null right.etype right.epos)) });
         handle_assign Ast.OpAssign { expr with eexpr = TLocal(v); etype = v.v_type } right
       (* TIf handling *)
       | TBinop((Ast.OpAssign as op),left, ({ eexpr = TIf _ } as right))
       | TBinop((Ast.OpAssignOp _ as op),left,({ eexpr = TIf _ } as right)) when is_problematic_if right ->
         handle_assign op left right
-      | TVars([v,Some({ eexpr = TIf _ } as right)]) when is_problematic_if right ->
-        add_statement ({ expr with eexpr = TVars([v, Some(null right.etype right.epos)]) });
+      | TVar(v,Some({ eexpr = TIf _ } as right)) when is_problematic_if right ->
+        add_statement ({ expr with eexpr = TVar(v, Some(null right.etype right.epos)) });
         handle_assign Ast.OpAssign { expr with eexpr = TLocal(v); etype = v.v_type } right
       | TWhile(cond, e1, flag) when is_problematic_if cond ->
         twhile_with_condition_statement gen add_statement expr cond e1 flag;
@@ -5051,8 +5122,6 @@ struct
           let rec process_statement e =
             let e = no_paren e in
             match e.eexpr, shallow_expr_type e with
-              | TVars( (hd1 :: hd2 :: _) as vars ), _ ->
-                List.iter (fun v -> process_statement { e with eexpr = TVars([v]) }) vars
               | TCall( { eexpr = TLocal v } as elocal, elist ), _ when String.get v.v_name 0 = '_' && Hashtbl.mem gen.gspecial_vars v.v_name ->
                 new_block := { e with eexpr = TCall( elocal, List.map (fun e ->
                   match e.eexpr with
@@ -5101,8 +5170,8 @@ struct
           { e with eexpr = TBlock(block) }
         | TTry (block, catches) ->
           { e with eexpr = TTry(traverse (mk_block block), List.map (fun (v,block) -> (v, traverse (mk_block block))) catches) }
-        | TMatch (cond,ep,il_vol_e_l,default) ->
-          { e with eexpr = TMatch(cond,ep,List.map (fun (il,vol,e) -> (il,vol,traverse (mk_block e))) il_vol_e_l, Option.map (fun e -> traverse (mk_block e)) default) }
+(*         | TMatch (cond,ep,il_vol_e_l,default) ->
+          { e with eexpr = TMatch(cond,ep,List.map (fun (il,vol,e) -> (il,vol,traverse (mk_block e))) il_vol_e_l, Option.map (fun e -> traverse (mk_block e)) default) } *)
         | TSwitch (cond,el_e_l, default) ->
           { e with eexpr = TSwitch(cond, List.map (fun (el,e) -> (el, traverse (mk_block e))) el_e_l, Option.map (fun e -> traverse (mk_block e)) default) }
         | TWhile (cond,block,flag) ->
@@ -5179,6 +5248,7 @@ struct
     let default_implementation gen =
       let rec extract_expr e = match e.eexpr with
         | TParenthesis e
+        | TMeta (_,e)
         | TCast(e,_) -> extract_expr e
         | _ -> e
       in
@@ -5780,7 +5850,10 @@ struct
         in
         let error = error || (match follow actual_t with | TFun _ -> false | _ -> true) in
         if error then (* if error, ignore arguments *)
-          mk_cast ecall.etype { ecall with eexpr = TCall({ e1 with eexpr = TField(!ef, f) }, elist ) }
+          if is_void ecall.etype then
+            { ecall with eexpr = TCall({ e1 with eexpr = TField(!ef, f) }, elist ) }
+          else
+            mk_cast ecall.etype { ecall with eexpr = TCall({ e1 with eexpr = TField(!ef, f) }, elist ) }
         else begin
           (* infer arguments *)
           (* let called_t = TFun(List.map (fun e -> "arg",false,e.etype) elist, ecall.etype) in *)
@@ -5942,6 +6015,8 @@ struct
             | _ -> Type.map_expr run e
           )
         (* the TNew and TSuper code was modified at r6497 *)
+        | TNew ({ cl_kind = KTypeParameter _ }, _, _) ->
+          Type.map_expr run e
         | TNew (cl, tparams, eparams) -> (try
           let is_overload, cf, sup, stl = choose_ctor gen cl tparams (List.map (fun e -> e.etype) eparams) maybe_empty_t e.epos in
           let handle e t1 t2 =
@@ -5991,13 +6066,11 @@ struct
                   handle (e) (gen.greal_type e.etype) (gen.greal_type real_t)
               )
             | _ -> Type.map_expr run e)
-        | TVars (veopt_l) ->
-          { e with eexpr = TVars (List.map (fun (v,eopt) ->
-            match eopt with
-              | None -> (v,eopt)
-              | Some e ->
-                (v, Some( handle (run e) v.v_type e.etype ))
-          ) veopt_l) }
+        | TVar (v, eopt) ->
+          { e with eexpr = TVar (v, match eopt with
+              | None -> eopt
+              | Some e -> Some( handle (run e) v.v_type e.etype ))
+          }
         (* FIXME deal with in_value when using other statements that may not have a TBlock wrapped on them *)
         | TIf (econd, ethen, Some(eelse)) when was_in_value ->
           { e with eexpr = TIf (handle (run econd) gen.gcon.basic.tbool econd.etype, handle (run ethen) e.etype ethen.etype, Some( handle (run eelse) e.etype eelse.etype ) ) }
@@ -6007,8 +6080,8 @@ struct
           { e with eexpr = TWhile (handle (run econd) gen.gcon.basic.tbool econd.etype, run (mk_block e1), flag) }
         | TSwitch (cond, el_e_l, edef) ->
           { e with eexpr = TSwitch(run cond, List.map (fun (el,e) -> (List.map run el, run (mk_block e))) el_e_l, Option.map (fun e -> run (mk_block e)) edef) }
-        | TMatch (cond, en, il_vl_e_l, edef) ->
-          { e with eexpr = TMatch(run cond, en, List.map (fun (il, vl, e) -> (il, vl, run (mk_block e))) il_vl_e_l, Option.map (fun e -> run (mk_block e)) edef) }
+(*         | TMatch (cond, en, il_vl_e_l, edef) ->
+          { e with eexpr = TMatch(run cond, en, List.map (fun (il, vl, e) -> (il, vl, run (mk_block e))) il_vl_e_l, Option.map (fun e -> run (mk_block e)) edef) } *)
         | TFor (v,cond,e1) ->
           { e with eexpr = TFor(v, run cond, run (mk_block e1)) }
         | TTry (e, ve_l) ->
@@ -6021,7 +6094,7 @@ struct
           let rec get_null e =
             match e.eexpr with
             | TConst TNull -> Some e
-            | TParenthesis e -> get_null e
+            | TParenthesis e | TMeta(_,e) -> get_null e
             | _ -> None
           in
           (match get_null expr with
@@ -6451,7 +6524,7 @@ struct
         *)
         let block =
         [
-          { eexpr = TVars([res, Some(ctx.rcf_hash_function hash_local fst_hash)]); etype = basic.tvoid; epos = pos };
+          { eexpr = TVar(res, Some(ctx.rcf_hash_function hash_local fst_hash)); etype = basic.tvoid; epos = pos };
           { eexpr = TIf(gte, mk_return (mk_tarray fst_dynamics res_local), Some({
             eexpr = TBlock(
             [
@@ -6508,12 +6581,12 @@ struct
 
         let block =
         [
-          { eexpr = TVars([res, Some(ctx.rcf_hash_function hash_local fst_hash)]); etype = basic.tvoid; epos = pos };
+          { eexpr = TVar(res, Some(ctx.rcf_hash_function hash_local fst_hash)); etype = basic.tvoid; epos = pos };
           {
             eexpr = TIf(gte,
               mk_return { eexpr = TBinop(Ast.OpAssign, mk_tarray fst_dynamics res_local, value_local); etype = value_local.etype; epos = pos },
               Some({ eexpr = TBlock([
-                { eexpr = TVars([ res2, Some(ctx.rcf_hash_function hash_local snd_hash)]); etype = basic.tvoid; epos = pos };
+                { eexpr = TVar( res2, Some(ctx.rcf_hash_function hash_local snd_hash)); etype = basic.tvoid; epos = pos };
                 {
                   eexpr = TIf(gte, { eexpr = TBlock([
                     mk_splice snd_hash res2_local;
@@ -6586,7 +6659,7 @@ struct
         return false;
       *)
       [
-        { eexpr = TVars([res,Some(ctx.rcf_hash_function local_switch_var hx_hashes)]); etype = basic.tvoid; epos = pos };
+        { eexpr = TVar(res,Some(ctx.rcf_hash_function local_switch_var hx_hashes)); etype = basic.tvoid; epos = pos };
         {
           eexpr = TIf(gte, { eexpr = TBlock([
             mk_splice hx_hashes res_local;
@@ -6658,7 +6731,7 @@ struct
         | TIf(cond,e1,Some e2) ->
           is_side_effects_free cond && is_side_effects_free e1 && is_side_effects_free e2
         | TField(e,_)
-        | TParenthesis e -> is_side_effects_free e
+        | TParenthesis e | TMeta(_,e) -> is_side_effects_free e
         | TArrayDecl el -> List.for_all is_side_effects_free el
         | TCast(e,_) -> is_side_effects_free e
         | _ -> false
@@ -6754,7 +6827,7 @@ struct
             change_exprs tl ((name,expr) :: acc)
           else begin
             let var = mk_temp gen "odecl" expr.etype in
-            exprs_before := { eexpr = TVars([var,Some expr]); etype = basic.tvoid; epos = expr.epos } :: !exprs_before;
+            exprs_before := { eexpr = TVar(var,Some expr); etype = basic.tvoid; epos = expr.epos } :: !exprs_before;
             change_exprs tl ((name,mk_local var expr.epos) :: acc)
           end
         | [] -> acc
@@ -8201,6 +8274,12 @@ struct
           match md with
             | TClassDecl ( { cl_interface = true } as cl ) when cl.cl_path <> baseclass.cl_path && cl.cl_path <> baseinterface.cl_path && cl.cl_path <> basedynamic.cl_path ->
               cl.cl_implements <- (baseinterface, []) :: cl.cl_implements
+            | TClassDecl ({ cl_kind = KAbstractImpl _ } as cl) ->
+              (*
+                TODO: probably here is not the best place to add @:final to KAbstractImpl, also:
+                Doesn't it make sense to add @:final to KAbstractImpls on all platforms?
+              *)
+              if not (Meta.has Meta.Final cl.cl_meta) then cl.cl_meta <- (Meta.Final, [], cl.cl_pos) :: cl.cl_meta
             | TClassDecl ( { cl_super = None } as cl ) when cl.cl_path <> baseclass.cl_path && cl.cl_path <> baseinterface.cl_path && cl.cl_path <> basedynamic.cl_path ->
               if is_some cl.cl_dynamic then
                 cl.cl_super <- Some (basedynamic,[])
@@ -8232,7 +8311,7 @@ struct
   let configure ?slow_invoke ctx baseinterface =
     let gen = ctx.rcf_gen in
     let run = (fun md -> match md with
-      | TClassDecl cl when is_hxgen md && ( not cl.cl_interface || cl.cl_path = baseinterface.cl_path ) ->
+      | TClassDecl cl when is_hxgen md && ( not cl.cl_interface || cl.cl_path = baseinterface.cl_path ) && (match cl.cl_kind with KAbstractImpl _ -> false | _ -> true) ->
         (if Meta.has Meta.ReplaceReflection cl.cl_meta then replace_reflection ctx cl);
         (implement_dynamics ctx cl);
         (if not (PMap.mem (gen.gmk_internal_name "hx" "lookupField") cl.cl_fields) then implement_final_lookup ctx cl);
@@ -8550,7 +8629,7 @@ struct
           [], cond
         | _ ->
           let v = mk_temp gen "cond" cond.etype in
-          [ { eexpr = TVars([v, Some cond]); etype = gen.gcon.basic.tvoid; epos = cond.epos } ], mk_local v cond.epos
+          [ { eexpr = TVar(v, Some cond); etype = gen.gcon.basic.tvoid; epos = cond.epos } ], mk_local v cond.epos
       in
       exprs_before, new_cond
 
@@ -8566,7 +8645,7 @@ struct
         List.fold_left
           (fun acc v -> incr n; match v with None -> acc | Some v -> (v,!n) :: acc) [] l)
 
-    let tmatch_params_to_exprs gen params cond_local =
+(*     let tmatch_params_to_exprs gen params cond_local =
       let vars = tmatch_params_to_vars params in
       let cond_array = { (mk_field_access gen cond_local "params" cond_local.epos) with etype = gen.gcon.basic.tarray t_empty } in
       let tvars = List.map (fun (v, n) ->
@@ -8576,48 +8655,27 @@ struct
         | [] ->
             []
         | _ ->
-            [ { eexpr = TVars(tvars); etype = gen.gcon.basic.tvoid; epos = cond_local.epos } ]
-
+            [ { eexpr = TVar(tvars); etype = gen.gcon.basic.tvoid; epos = cond_local.epos } ]
+ *)
     let traverse gen t opt_get_native_enum_tag =
       let rec run e =
         match e.eexpr with
-          | TMatch(cond,(en,eparams),cases,default) ->
-            let cond = run cond in (* being safe *)
+          | TEnumParameter(f, _,i) ->
+            let f = run f in
             (* check if en was converted to class *)
             (* if it was, switch on tag field and change cond type *)
-            let exprs_before, cond_local, cond = try
-              let cl = Hashtbl.find t.ec_tbl en.e_path in
-              let cond = { cond with etype = TInst(cl, eparams) } in
-              let exprs_before, new_cond = ensure_local gen cond in
-              exprs_before, new_cond, get_index gen new_cond cl eparams
-            with | Not_found ->
-              (*
-                if it's not a class, we'll either use get_native_enum_tag or in a last resource,
-                call Type.getEnumIndex
-              *)
-              match opt_get_native_enum_tag with
-                | Some get_native_etag ->
-                  [], cond, get_native_etag cond
-                | None ->
-                  [], cond, { eexpr = TCall(mk_static_field_access_infer gen.gclasses.cl_type "enumIndex" e.epos [], [cond]); etype = gen.gcon.basic.tint; epos = cond.epos }
-            in
-
-            (* for each case, change cases to expr int, and see if there is any var create *)
-            let change_case (il, params, expr) =
-              let expr = run expr in
-              (* if there are, set var with tarray *)
-              let exprs = tmatch_params_to_exprs gen params cond_local in
-              let expr = match expr.eexpr with
-                | TBlock(bl) -> { expr with eexpr = TBlock(exprs @ bl) }
-                | _ -> { expr with eexpr = TBlock ( exprs @ [expr] ) }
+            let f = try
+              let en, eparams = match follow (gen.gfollow#run_f f.etype) with
+                | TEnum(en,p) -> en, p
+                | _ -> raise Not_found
               in
-              (List.map (fun i -> mk_int gen i e.epos) il, expr)
+              let cl = Hashtbl.find t.ec_tbl en.e_path in
+              { f with etype = TInst(cl, eparams) }
+            with | Not_found ->
+              f
             in
-
-            let tswitch = { e with eexpr = TSwitch(cond, List.map change_case cases, Option.map run default) } in
-            (match exprs_before with
-              | [] -> tswitch
-              | _ -> { e with eexpr = TBlock(exprs_before @ [tswitch]) })
+            let cond_array = { (mk_field_access gen f "params" f.epos) with etype = gen.gcon.basic.tarray t_empty } in
+            { e with eexpr = TArray(cond_array, mk_int gen i cond_array.epos); }
           | _ -> Type.map_expr run e
       in
 
@@ -8817,12 +8875,12 @@ struct
             let temp = mk_temp gen "iterator" in_expr.etype in
             let block =
             [
-              { eexpr = TVars([temp, Some(in_expr)]); etype = basic.tvoid; epos = in_expr.epos };
+              { eexpr = TVar(temp, Some(in_expr)); etype = basic.tvoid; epos = in_expr.epos };
               {
                 eexpr = TWhile(
                   { eexpr = TCall(mk_access gen temp "hasNext" in_expr.epos, []); etype = basic.tbool; epos = in_expr.epos },
                   Codegen.concat ({
-                    eexpr = TVars([var, Some({ eexpr = TCall(mk_access gen temp "next" in_expr.epos, []); etype = var.v_type; epos = in_expr.epos })]);
+                    eexpr = TVar(var, Some({ eexpr = TCall(mk_access gen temp "next" in_expr.epos, []); etype = var.v_type; epos = in_expr.epos }));
                     etype = basic.tvoid;
                     epos = in_expr.epos
                   }) ( run block ),
@@ -8900,7 +8958,7 @@ struct
                 let cond = run cond in
                 let cond = if should_cache then mk_cast cond_etype cond else cond in
 
-                mk_local var cond.epos, [ { eexpr = TVars([var,Some(cond)]); etype = basic.tvoid; epos = cond.epos } ]
+                mk_local var cond.epos, [ { eexpr = TVar(var,Some(cond)); etype = basic.tvoid; epos = cond.epos } ]
             in
 
             let mk_eq cond =
@@ -9146,7 +9204,7 @@ struct
                               v, mk_local v e1.epos, e1
                           in
                           { e with eexpr = TBlock([
-                            { eexpr = TVars([v, Some evars ]); etype = gen.gcon.basic.tvoid; epos = e.epos };
+                            { eexpr = TVar(v, Some evars); etype = gen.gcon.basic.tvoid; epos = e.epos };
                             { e with eexpr = TBinop( Ast.OpAssign, e1, handle_wrap { e with eexpr = TBinop (op, handle_unwrap t1 e1, handle_unwrap t2 (run e2) ) } t1 ) }
                           ]) }
                       )
@@ -9331,7 +9389,7 @@ struct
 
           new_e
         | TSwitch _
-        | TMatch _ ->
+        | TPatMatch _ ->
           let last_switch = !in_switch in
           in_switch := true;
 
@@ -9423,7 +9481,7 @@ struct
     match e.eexpr with
       | TConst (v) -> Some v
       | TBinop(op, v1, v2) -> aggregate_constant op (get_constant_expr v1) (get_constant_expr v2)
-      | TParenthesis(e) -> get_constant_expr e
+      | TParenthesis(e) | TMeta(_,e) -> get_constant_expr e
       | _ -> None
 
   let traverse gen should_warn handle_switch_break handle_not_final_returns java_mode =
@@ -9555,9 +9613,9 @@ struct
             (el, handle_case (e, ek))
           ) el_e_l, Some def) } in
           ret, !k
-        | TMatch(cond, ep, il_vopt_e_l, None) ->
-          { expr with eexpr = TMatch(cond, ep, List.map (fun (il, vopt, e) -> (il, vopt, handle_case (process_expr e))) il_vopt_e_l, None) }, Normal
-        | TMatch(cond, ep, il_vopt_e_l, Some def) ->
+(*         | TMatch(cond, ep, il_vopt_e_l, None) ->
+          { expr with eexpr = TMatch(cond, ep, List.map (fun (il, vopt, e) -> (il, vopt, handle_case (process_expr e))) il_vopt_e_l, None) }, Normal *)
+(*         | TMatch(cond, ep, il_vopt_e_l, Some def) ->
           let def, k = process_expr def in
           let def = handle_case (def, k) in
           let k = ref k in
@@ -9566,7 +9624,7 @@ struct
             k := aggregate_kind !k ek;
             (il, vopt, handle_case (e, ek))
           ) il_vopt_e_l, Some def) } in
-          ret, !k
+          ret, !k *)
         | TTry (e, catches) ->
           let e, k = process_expr e in
           let k = ref k in
@@ -9629,7 +9687,7 @@ struct
         (* var v = (temp_var == null) ? const : cast temp_var; *)
         block :=
         {
-          eexpr = TVars([var, Some(
+          eexpr = TVar(var, Some(
           {
             eexpr = TIf(
               { eexpr = TBinop(Ast.OpEq, mk_local nullable_var pos, null nullable_var.v_type pos); etype = basic.tbool; epos = pos },
@@ -9638,7 +9696,7 @@ struct
             );
             etype = var.v_type;
             epos = pos;
-          })]);
+          }));
           etype = basic.tvoid;
           epos = pos;
         } :: !block;
@@ -9847,8 +9905,8 @@ struct
           { e with eexpr = TBlock bl }
         | TTry (block, catches) ->
           { e with eexpr = TTry(traverse (mk_block block), List.map (fun (v,block) -> (v, traverse (mk_block block))) catches) }
-        | TMatch (cond,ep,il_vol_e_l,default) ->
-          { e with eexpr = TMatch(cond,ep,List.map (fun (il,vol,e) -> (il,vol,traverse (mk_block e))) il_vol_e_l, Option.map (fun e -> traverse (mk_block e)) default) }
+(*         | TMatch (cond,ep,il_vol_e_l,default) ->
+          { e with eexpr = TMatch(cond,ep,List.map (fun (il,vol,e) -> (il,vol,traverse (mk_block e))) il_vol_e_l, Option.map (fun e -> traverse (mk_block e)) default) } *)
         | TSwitch (cond,el_e_l, default) ->
           { e with eexpr = TSwitch(cond, List.map (fun (el,e) -> (el, traverse (mk_block e))) el_e_l, Option.map (fun e -> traverse (mk_block e)) default) }
         | TWhile (cond,block,flag) ->
@@ -10163,11 +10221,12 @@ struct
                   end else
                     (v,None) :: args, vdecl
                 ) ([],[]) tf.tf_args actual_args in
+
                 if vardecl <> [] then
                 f.cf_expr <- Some({ e with
                   eexpr = TFunction({ tf with
                     tf_args = List.rev new_args;
-                    tf_expr = Codegen.concat { eexpr = TVars(vardecl); etype = gen.gcon.basic.tvoid; epos = e.epos } tf.tf_expr
+                    tf_expr = Codegen.concat { eexpr = TBlock(List.map (fun (v,ve) -> { eexpr = TVar(v,ve); etype = gen.gcon.basic.tvoid; epos = e.epos }) vardecl); etype = gen.gcon.basic.tvoid; epos = e.epos } tf.tf_expr
                   });
                 });
                 f
@@ -10193,13 +10252,14 @@ struct
 end;;
 
 (* ******************************************* *)
-(* NormalizeType *)
+(* Normalize *)
 (* ******************************************* *)
 
 (*
 
   - Filters out enum constructor type parameters from the AST; See Issue #1796
   - Filters out monomorphs
+  - Filters out all non-whitelisted AST metadata
 
   dependencies:
     No dependencies; but it still should be one of the first filters to run,
@@ -10207,7 +10267,7 @@ end;;
 
 *)
 
-module NormalizeType =
+module Normalize =
 struct
 
   let name = "normalize_type"
@@ -10234,14 +10294,18 @@ struct
   | TDynamic _ -> t
   | TLazy f -> filter_param (!f())
 
-  let default_implementation gen =
+  let default_implementation gen ~metas =
     let rec run e =
-      map_expr_type (fun e -> run e) filter_param (fun v -> v.v_type <- filter_param v.v_type; v) e
+      match e.eexpr with
+      | TMeta(entry, e) when not (Hashtbl.mem metas entry) ->
+        run e
+      | _ ->
+        map_expr_type (fun e -> run e) filter_param (fun v -> v.v_type <- filter_param v.v_type; v) e
     in
     run
 
-  let configure gen =
-    let map e = Some(default_implementation gen e) in
+  let configure gen ~metas =
+    let map e = Some(default_implementation gen e ~metas:metas) in
     gen.gexpr_filters#add ~name:name ~priority:(PCustom priority) map
 
 end;;

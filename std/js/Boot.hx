@@ -41,8 +41,8 @@ class Boot {
 			var d;
 			if( __js__("typeof")(document) != "undefined" && (d = document.getElementById("haxe:trace")) != null )
 				d.innerHTML += __unhtml(msg)+"<br/>";
-			else if( __js__("typeof")(console) != "undefined" && console.log != null )
-				console.log(msg);
+			else if( __js__("typeof console") != "undefined" && __js__("console").log != null )
+				__js__("console").log(msg);
 			#end
 		}
 	}
@@ -122,7 +122,7 @@ class Boot {
 				var str = "{\n";
 				s += "\t";
 				var hasp = (o.hasOwnProperty != null);
-				__js__("for( var k in o ) { ");
+				__js__("for( var k in o ) {");
 					if( hasp && !o.hasOwnProperty(k) )
 						__js__("continue");
 					if( k == "prototype" || k == "__class__" || k == "__super__" || k == "__interfaces__" || k == "__properties__" )

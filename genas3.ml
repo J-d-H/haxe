@@ -276,7 +276,7 @@ let rec type_str ctx t p =
 let rec iter_switch_break in_switch e =
 	match e.eexpr with
 	| TFunction _ | TWhile _ | TFor _ -> ()
-	| TSwitch _ | TMatch _ when not in_switch -> iter_switch_break true e
+	| TSwitch _ | TPatMatch _ when not in_switch -> iter_switch_break true e
 	| TBreak when in_switch -> raise Exit
 	| _ -> iter (iter_switch_break in_switch) e
 
@@ -300,15 +300,6 @@ let handle_break ctx e =
 			)
 
 let this ctx = if ctx.in_value <> None then "$this" else "this"
-
-let escape_bin s =
-	let b = Buffer.create 0 in
-	for i = 0 to String.length s - 1 do
-		match Char.code (String.unsafe_get s i) with
-		| c when c < 32 -> Buffer.add_string b (Printf.sprintf "\\x%.2X" c)
-		| c -> Buffer.add_char b (Char.chr c)
-	done;
-	Buffer.contents b
 
 let generate_resources infos =
 	if Hashtbl.length infos.com.resources <> 0 then begin
@@ -347,7 +338,7 @@ let generate_resources infos =
 let gen_constant ctx p = function
 	| TInt i -> print ctx "%ld" i
 	| TFloat s -> spr ctx s
-	| TString s -> print ctx "\"%s\"" (escape_bin (Ast.s_escape s))
+	| TString s -> print ctx "\"%s\"" (Ast.s_escape s)
 	| TBool b -> spr ctx (if b then "true" else "false")
 	| TNull -> spr ctx "null"
 	| TThis -> spr ctx (this ctx)
@@ -408,6 +399,10 @@ let rec gen_call ctx e el r =
 	| TLocal { v_name = "__is__" } , [e1;e2] ->
 		gen_value ctx e1;
 		spr ctx " is ";
+		gen_value ctx e2;
+	| TLocal { v_name = "__in__" } , [e1;e2] ->
+		gen_value ctx e1;
+		spr ctx " in ";
 		gen_value ctx e2;
 	| TLocal { v_name = "__as__" }, [e1;e2] ->
 		gen_value ctx e1;
@@ -580,6 +575,9 @@ and gen_expr ctx e =
 		gen_expr ctx e1;
 		spr ctx ")";
 		gen_field_access ctx e1.etype (field_name s)
+	| TEnumParameter (e,_,i) ->
+		gen_value ctx e;
+		print ctx ".params[%i]" i;
 	| TField (e,s) ->
    		gen_value ctx e;
 		gen_field_access ctx e.etype (field_name s)
@@ -589,6 +587,8 @@ and gen_expr ctx e =
 		spr ctx "(";
 		gen_value ctx e;
 		spr ctx ")";
+	| TMeta (_,e) ->
+		gen_expr ctx e
 	| TReturn eo ->
 		if ctx.in_value <> None then unsupported e.epos;
 		(match eo with
@@ -648,18 +648,15 @@ and gen_expr ctx e =
 	| TThrow e ->
 		spr ctx "throw ";
 		gen_value ctx e;
-	| TVars [] ->
-		()
-	| TVars vl ->
+	| TVar (v,eo) ->
 		spr ctx "var ";
-		concat ctx ", " (fun (v,eo) ->
-			print ctx "%s : %s" (s_ident v.v_name) (type_str ctx v.v_type e.epos);
-			match eo with
-			| None -> ()
-			| Some e ->
-				spr ctx " = ";
-				gen_value ctx e
-		) vl;
+		print ctx "%s : %s" (s_ident v.v_name) (type_str ctx v.v_type e.epos);
+		begin match eo with
+		| None -> ()
+		| Some e ->
+			spr ctx " = ";
+			gen_value ctx e
+		end
 	| TNew (c,params,el) ->
 		(match c.cl_path, params with
 		| (["flash"],"Vector"), [pt] -> print ctx "new Vector.<%s>(" (type_str ctx pt e.epos)
@@ -721,49 +718,7 @@ and gen_expr ctx e =
 			print ctx "catch( %s : %s )" (s_ident v.v_name) (type_str ctx v.v_type e.epos);
 			gen_expr ctx e;
 		) catchs;
-	| TMatch (e,_,cases,def) ->
-		print ctx "{";
-		let bend = open_block ctx in
-		newline ctx;
-		let tmp = gen_local ctx "$e" in
-		print ctx "var %s : enum = " tmp;
-		gen_value ctx e;
-		newline ctx;
-		print ctx "switch( %s.index ) {" tmp;
-		List.iter (fun (cl,params,e) ->
-			List.iter (fun c ->
-				newline ctx;
-				print ctx "case %d:" c;
-			) cl;
-			(match params with
-			| None | Some [] -> ()
-			| Some l ->
-				let n = ref (-1) in
-				let l = List.fold_left (fun acc v -> incr n; match v with None -> acc | Some v -> (v,!n) :: acc) [] l in
-				match l with
-				| [] -> ()
-				| l ->
-					newline ctx;
-					spr ctx "var ";
-					concat ctx ", " (fun (v,n) ->
-						print ctx "%s : %s = %s.params[%d]" (s_ident v.v_name) (type_str ctx v.v_type e.epos) tmp n;
-					) l);
-			gen_block ctx e;
-			print ctx "break";
-		) cases;
-		(match def with
-		| None -> ()
-		| Some e ->
-			newline ctx;
-			spr ctx "default:";
-			gen_block ctx e;
-			print ctx "break";
-		);
-		newline ctx;
-		spr ctx "}";
-		bend();
-		newline ctx;
-		spr ctx "}";
+	| TPatMatch dt -> assert false
 	| TSwitch (e,cases,def) ->
 		spr ctx "switch";
 		gen_value ctx (parent e);
@@ -789,9 +744,14 @@ and gen_expr ctx e =
 		);
 		spr ctx "}"
 	| TCast (e1,None) ->
-		spr ctx "((";
-		gen_expr ctx e1;
-		print ctx ") as %s)" (type_str ctx e.etype e.epos);
+		let s = type_str ctx e.etype e.epos in
+		if s = "*" then
+			gen_expr ctx e1
+		else begin
+			spr ctx "((";
+			gen_value ctx e1;
+			print ctx ") as %s)" s
+		end
 	| TCast (e1,Some t) ->
 		gen_expr ctx (Codegen.default_cast ctx.inf.com e1 t e.etype e.epos)
 
@@ -857,6 +817,7 @@ and gen_value ctx e =
 	| TArray _
 	| TBinop _
 	| TField _
+	| TEnumParameter _
 	| TTypeExpr _
 	| TParenthesis _
 	| TObjectDecl _
@@ -866,11 +827,18 @@ and gen_value ctx e =
 	| TUnop _
 	| TFunction _ ->
 		gen_expr ctx e
+	| TMeta (_,e1) ->
+		gen_value ctx e1
 	| TCast (e1,None) ->
 		let s = type_str ctx e.etype e1.epos in
-		if s = "*" then
+		begin match s with
+		| "*" ->
 			gen_value ctx e1
-		else begin
+		| "Function" ->
+			spr ctx "((";
+			gen_value ctx e1;
+			print ctx ") as %s)" s;
+		| _ ->
 			print ctx "%s(" s;
 			gen_value ctx e1;
 			spr ctx ")";
@@ -881,7 +849,7 @@ and gen_value ctx e =
 	| TBreak
 	| TContinue ->
 		unsupported e.epos
-	| TVars _
+	| TVar _
 	| TFor _
 	| TWhile _
 	| TThrow _ ->
@@ -924,13 +892,7 @@ and gen_value ctx e =
 			match def with None -> None | Some e -> Some (assign e)
 		)) e.etype e.epos);
 		v()
-	| TMatch (cond,enum,cases,def) ->
-		let v = value true in
-		gen_expr ctx (mk (TMatch (cond,enum,
-			List.map (fun (constr,params,e) -> (constr,params,assign e)) cases,
-			match def with None -> None | Some e -> Some (assign e)
-		)) e.etype e.epos);
-		v()
+	| TPatMatch dt -> assert false
 	| TTry (b,catchs) ->
 		let v = value true in
 		gen_expr ctx (mk (TTry (block (assign b),

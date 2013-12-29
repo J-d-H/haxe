@@ -58,6 +58,10 @@ let rec t_has_type_param t = match follow t with
   | TFun(f,ret) -> t_has_type_param ret || List.exists (fun (_,_,t) -> t_has_type_param t) f
   | _ -> false
 
+let is_type_param t = match follow t with
+  | TInst({ cl_kind = KTypeParameter _ }, _) -> true
+  | _ -> false
+
 let rec t_has_type_param_shallow last t = match follow t with
   | TInst({ cl_kind = KTypeParameter _ }, []) -> true
   | TEnum(_, params)
@@ -284,12 +288,12 @@ struct
       (* this is hack to not use 'break' on switch cases *)
       | TLocal { v_name = "__fallback__" } when is_switch -> true
       | TCall( { eexpr = TLocal { v_name = "__goto__" } }, _ ) -> true
-      | TParenthesis p -> is_final_return_expr p
+      | TParenthesis p | TMeta (_,p) -> is_final_return_expr p
       | TBlock bl -> is_final_return_block is_switch bl
       | TSwitch (_, el_e_l, edef) ->
         List.for_all (fun (_,e) -> is_final_return_expr e) el_e_l && Option.map_default is_final_return_expr false edef
-      | TMatch (_, _, il_vl_e_l, edef) ->
-        List.for_all (fun (_,_,e) -> is_final_return_expr e)il_vl_e_l && Option.map_default is_final_return_expr false edef
+(*       | TMatch (_, _, il_vl_e_l, edef) ->
+        List.for_all (fun (_,_,e) -> is_final_return_expr e)il_vl_e_l && Option.map_default is_final_return_expr false edef *)
       | TIf (_,eif, Some eelse) ->
         is_final_return_expr eif && is_final_return_expr eelse
       | TFor (_,_,e) ->
@@ -363,7 +367,7 @@ struct
       | TLocal _ -> e1
       | _ ->
         let var = mk_temp gen "svar" e1.etype in
-        let added = { e1 with eexpr = TVars([var, Some(e1)]); etype = basic.tvoid } in
+        let added = { e1 with eexpr = TVar(var, Some(e1)); etype = basic.tvoid } in
         let local = mk_local var e1.epos in
         block := added :: !block;
         local
@@ -388,7 +392,7 @@ struct
         | None ->
           let var = mk_temp gen "hash" basic.tint in
           let cond = !local_hashcode in
-          block := { eexpr = TVars([var, Some cond]); etype = basic.tvoid; epos = local.epos } :: !block;
+          block := { eexpr = TVar(var, Some cond); etype = basic.tvoid; epos = local.epos } :: !block;
           let local = mk_local var local.epos in
           local_hashcode := local;
           hash_cache := Some local;
@@ -499,7 +503,7 @@ struct
       eexpr = TSwitch(!local_hashcode, List.map change_case (reorder_cases ecases []), None);
     } in
     (if !has_case then begin
-      (if has_default then block := { e1 with eexpr = TVars([execute_def_var, Some({ e1 with eexpr = TConst(TBool true); etype = basic.tbool })]); etype = basic.tvoid } :: !block);
+      (if has_default then block := { e1 with eexpr = TVar(execute_def_var, Some({ e1 with eexpr = TConst(TBool true); etype = basic.tbool })); etype = basic.tvoid } :: !block);
       block := switch :: !block
     end);
     (match edefault with
@@ -531,7 +535,7 @@ struct
     let rec run e =
       match e.eexpr with
         (* for new NativeArray<T> issues *)
-        | TNew(({ cl_path = (["java"], "NativeArray") } as cl), [t], el) when t_has_type_param t ->
+        | TNew(({ cl_path = (["java"], "NativeArray") } as cl), [t], el) when is_type_param t ->
           mk_cast (TInst(cl,[t])) (mk_cast t_dynamic ({ e with eexpr = TNew(cl, [t_empty], List.map run el) }))
 
         (* Std.int() *)
@@ -858,7 +862,8 @@ let configure gen =
   in
 
   let is_dynamic t = match real_type t with
-    | TMono _ | TDynamic _ -> true
+    | TMono _ | TDynamic _
+    | TInst({ cl_kind = KTypeParameter _ }, _) -> true
     | TAnon anon ->
       (match !(anon.a_status) with
         | EnumStatics _ | Statics _ | AbstractStatics _ -> false
@@ -984,6 +989,9 @@ let configure gen =
       | _ -> t_s pos t
   in
 
+  let high_surrogate c = (c lsr 10) + 0xD7C0 in
+  let low_surrogate c = (c land 0x3FF) lor 0xDC00 in
+
   let escape ichar b =
     match ichar with
       | 92 (* \ *) -> Buffer.add_string b "\\\\"
@@ -992,7 +1000,8 @@ let configure gen =
       | 13 (* \r *) -> Buffer.add_string b "\\r"
       | 10 (* \n *) -> Buffer.add_string b "\\n"
       | 9 (* \t *) -> Buffer.add_string b "\\t"
-      | c when c < 32 || c >= 127 -> Buffer.add_string b (Printf.sprintf "\\u%.4x" c)
+      | c when c < 32 || (c >= 127 && c <= 0xFFFF) -> Buffer.add_string b (Printf.sprintf "\\u%.4x" c)
+      | c when c > 0xFFFF -> Buffer.add_string b (Printf.sprintf "\\u%.4x\\u%.4x" (high_surrogate c) (low_surrogate c))
       | c -> Buffer.add_char b (Char.chr c)
   in
 
@@ -1012,7 +1021,7 @@ let configure gen =
     match e.eexpr with
       | TLocal { v_name = "__fallback__" }
       | TCall ({ eexpr = TLocal( { v_name = "__label__" } ) }, [ { eexpr = TConst(TInt _) } ] ) -> false
-      | TBlock _ | TFor _ | TSwitch _ | TMatch _ | TTry _ | TIf _ -> false
+      | TBlock _ | TFor _ | TSwitch _ | TPatMatch _ | TTry _ | TIf _ -> false
       | TWhile (_,_,flag) when flag = Ast.NormalWhile -> false
       | _ -> true
   in
@@ -1123,6 +1132,8 @@ let configure gen =
         | TTypeExpr mt -> write w (md_s e.epos mt)
         | TParenthesis e ->
           write w "("; expr_s w e; write w ")"
+        | TMeta (_,e) ->
+          expr_s w e
         | TArrayDecl el when t_has_type_param_shallow false e.etype ->
           print w "( (%s) (new java.lang.Object[] " (t_s e.epos e.etype);
           write w "{";
@@ -1165,7 +1176,15 @@ let configure gen =
           write w "synchronized(";
           expr_s w eobj;
           write w ")";
-          expr_s w (mk_block eblock)
+          (match eblock.eexpr with
+          | TBlock(_ :: _) ->
+            expr_s w eblock
+          | _ ->
+            begin_block w;
+            expr_s w eblock;
+            if has_semicolon eblock then write w ";";
+            end_block w;
+          )
         | TCall ({ eexpr = TLocal( { v_name = "__goto__" } ) }, [ { eexpr = TConst(TInt v) } ] ) ->
           print w "break label%ld" v
         | TCall ({ eexpr = TLocal( { v_name = "__label__" } ) }, [ { eexpr = TConst(TInt v) } ] ) ->
@@ -1232,6 +1251,8 @@ let configure gen =
             acc + 1
           ) 0 el);
           write w ")"
+        | TNew ({ cl_kind = KTypeParameter _ } as cl, params, el) ->
+          print w "null /* This code should never be reached. It was produced by the use of @:generic on a new type parameter instance: %s */" (path_param_s e.epos (TClassDecl cl) cl.cl_path params)
         | TNew (cl, params, el) ->
           write w "new ";
           write w (path_param_s e.epos (TClassDecl cl) cl.cl_path params);
@@ -1251,21 +1272,17 @@ let configure gen =
           (match flag with
             | Ast.Prefix -> write w ( " " ^ (Ast.s_unop op) ^ " (" ); expr_s w e; write w ") "
             | Ast.Postfix -> write w "("; expr_s w e; write w (") " ^ Ast.s_unop op))
-        | TVars (v_eop_l) ->
-          ignore (List.fold_left (fun acc (var, eopt) ->
-            (if acc <> 0 then write w "; ");
-            print w "%s " (t_s e.epos var.v_type);
-            write_id w var.v_name;
-            (match eopt with
-              | None ->
-                write w " = ";
-                expr_s w (null var.v_type e.epos)
-              | Some e ->
-                write w " = ";
-                expr_s w e
-            );
-            acc + 1
-          ) 0 v_eop_l);
+        | TVar (var, eopt) ->
+          print w "%s " (t_s e.epos var.v_type);
+          write_id w var.v_name;
+          (match eopt with
+            | None ->
+              write w " = ";
+              expr_s w (null var.v_type e.epos)
+            | Some e ->
+              write w " = ";
+              expr_s w e
+          )
         | TBlock [e] when was_in_value ->
           expr_s w e
         | TBlock el ->
@@ -1388,7 +1405,8 @@ let configure gen =
           if !strict_mode then assert false
         | TObjectDecl _ -> write w "[ obj decl not supported ]"; if !strict_mode then assert false
         | TFunction _ -> write w "[ func decl not supported ]"; if !strict_mode then assert false
-        | TMatch _ -> write w "[ match not supported ]"; if !strict_mode then assert false
+        | TPatMatch _ -> write w "[ match not supported ]"; if !strict_mode then assert false
+        | TEnumParameter _ -> write w "[ enum parameter not supported ]"; if !strict_mode then assert false
     in
     expr_s w e
   in
@@ -1767,7 +1785,7 @@ let configure gen =
   StubClosureImpl.configure gen (StubClosureImpl.default_implementation gen float_cl 10 (fun e _ _ -> e));*)
 
   FixOverrides.configure gen;
-  NormalizeType.configure gen;
+  Normalize.configure gen ~metas:(Hashtbl.create 0);
   AbstractImplementationFix.configure gen;
 
   IteratorsInterface.configure gen (fun e -> e);
@@ -2069,7 +2087,7 @@ let configure gen =
 
   let native_arr_cl = get_cl ( get_type gen (["java"], "NativeArray") ) in
 
-  ExpressionUnwrap.configure gen (ExpressionUnwrap.traverse gen (fun e -> Some { eexpr = TVars([mk_temp gen "expr" e.etype, Some e]); etype = gen.gcon.basic.tvoid; epos = e.epos }));
+  ExpressionUnwrap.configure gen (ExpressionUnwrap.traverse gen (fun e -> Some { eexpr = TVar(mk_temp gen "expr" e.etype, Some e); etype = gen.gcon.basic.tvoid; epos = e.epos }));
 
   UnnecessaryCastsRemoval.configure gen;
 
@@ -2110,7 +2128,14 @@ let configure gen =
     let res = ref [] in
     Hashtbl.iter (fun name v ->
       res := { eexpr = TConst(TString name); etype = gen.gcon.basic.tstring; epos = Ast.null_pos } :: !res;
-      let f = open_out (gen.gcon.file ^ "/src/" ^ name) in
+
+      let full_path = gen.gcon.file ^ "/src/" ^ name in
+      let parts = Str.split_delim (Str.regexp "[\\/]+") full_path in
+      let dir_list = List.rev (List.tl (List.rev parts)) in
+
+      Common.mkdir_recursive "" dir_list;
+
+      let f = open_out full_path in
       output_string f v;
       close_out f
     ) gen.gcon.resources;
@@ -2174,6 +2199,9 @@ let generate con =
     mk_class_field "equals" (TFun(["obj",false,t_dynamic], basic.tbool)) true Ast.null_pos (Method MethNormal) [];
     mk_class_field "toString" (TFun([], basic.tstring)) true Ast.null_pos (Method MethNormal) [];
     mk_class_field "hashCode" (TFun([], basic.tint)) true Ast.null_pos (Method MethNormal) [];
+    mk_class_field "wait" (TFun([], basic.tvoid)) true Ast.null_pos (Method MethNormal) [];
+    mk_class_field "notify" (TFun([], basic.tvoid)) true Ast.null_pos (Method MethNormal) [];
+    mk_class_field "notifyAll" (TFun([], basic.tvoid)) true Ast.null_pos (Method MethNormal) [];
   ] in
   List.iter (fun cf -> gen.gbase_class_fields <- PMap.add cf.cf_name cf gen.gbase_class_fields) basic_fns;
 
@@ -2958,7 +2986,9 @@ let get_classes_zip zip =
   !ret
 
 let add_java_lib com file std =
-  let file = try Common.find_file com file with
+  let file = if Sys.file_exists file then
+		file
+	else try Common.find_file com file with
     | Not_found -> try Common.find_file com (file ^ ".jar") with
     | Not_found ->
       failwith ("Java lib " ^ file ^ " not found")

@@ -23,15 +23,15 @@ package haxe;
 
 /**
 	Crossplatform JSON API : it will automatically use the optimized native API if available.
-	Use -D haxeJSON to force usage of the haXe implementation even if a native API is found : this will provide
+	Use -D haxeJSON to force usage of the Haxe implementation even if a native API is found : this will provide
 	extra encoding features such as enums (replaced by their index), Hashs and Iterable.
 **/
-#if (flash11 && !haxeJSON)
+#if ((flash11 || (js && !old_browser)) && !haxeJSON)
 @:native('JSON') extern
 #end
 class Json {
 
-#if (haxeJSON || !flash11)
+#if (haxeJSON || !(flash11 || (js && !old_browser)))
 	var buf : #if flash9 flash.utils.ByteArray #else StringBuf #end;
 	var str : String;
 	var pos : Int;
@@ -157,7 +157,7 @@ class Json {
 		addChar('"'.code);
 		var i = 0;
 		while( true ) {
-			var c = StringTools.fastCodeAt(s,i++);
+			var c = StringTools.fastCodeAt(s, i++);
 			if( StringTools.isEof(c) ) break;
 			switch( c ) {
 			case '"'.code: add('\\"');
@@ -167,7 +167,12 @@ class Json {
 			case '\t'.code: add('\\t');
 			case 8: add('\\b');
 			case 12: add('\\f');
-			default: addChar(c);
+			default:
+				#if flash9
+				if( c >= 128 ) add(String.fromCharCode(c)) else addChar(c);
+				#else
+				addChar(c);
+				#end
 			}
 		}
 		addChar('"'.code);
@@ -407,7 +412,7 @@ class Json {
 
 	public static function stringify( value : Dynamic, ?replacer:Dynamic -> Dynamic -> Dynamic ) : String {
 		#if (php && !haxeJSON)
-		return phpJsonEncode(value);
+		return phpJsonEncode(value, replacer);
 		#elseif (flash11 && !haxeJSON)
 		return null;
 		#else
@@ -416,7 +421,7 @@ class Json {
 	}
 
 	#if !haxeJSON
-		#if js
+		#if (js && old_browser)
 		static function __init__() untyped {
 			if( __js__('typeof(JSON)') != 'undefined' )
 				Json = __js__('JSON');
@@ -444,7 +449,9 @@ class Json {
 			return val;
 	}
 
-	static function phpJsonEncode(val:Dynamic):String {
+	static function phpJsonEncode(val:Dynamic, ?replacer:Dynamic -> Dynamic -> Dynamic):String {
+		if(null != replacer)
+			return new Json().toString(val, replacer);
 		var json = untyped __call__("json_encode", convertBeforeEncode(val));
 		if (untyped __physeq__(json, false))
 			return throw "invalid json";

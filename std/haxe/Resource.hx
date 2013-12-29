@@ -33,7 +33,7 @@ package haxe;
 class Resource {
 
 	#if (java || cs)
-	static var content : Array<String>;
+	@:keep static var content : Array<String>;
 	#else
 	static var content : Array<{ name : String, data : String, str : String }>;
 	#end
@@ -75,9 +75,9 @@ class Resource {
 	}
 
 	/**
-		Retrieves the resource identified by [name] as a String.
+		Retrieves the resource identified by `name` as a String.
 
-		If [name] does not match any resource name, null is returned.
+		If `name` does not match any resource name, null is returned.
 	**/
 	public static function getString( name : String ) : String {
 		#if java
@@ -87,7 +87,8 @@ class Resource {
 		var stream = new java.io.NativeInput(stream);
 		return stream.readAll().toString();
 		#elseif cs
-		var str:cs.system.io.Stream = untyped __cs__("typeof(haxe.Resource).Assembly.GetManifestResourceStream((string)getPaths().get(name).@value)");
+		var path = getPaths().get(name);
+		var str:cs.system.io.Stream = untyped __cs__("typeof(haxe.Resource).Assembly.GetManifestResourceStream(path)");
 		if (str != null)
 			return new cs.io.NativeInput(str).readAll().toString();
 		return null;
@@ -107,10 +108,10 @@ class Resource {
 	}
 
 	/**
-		Retrieves the resource identified by [name] as an instance of
+		Retrieves the resource identified by `name` as an instance of
 		haxe.io.Bytes.
 
-		If [name] does not match any resource name, null is returned.
+		If `name` does not match any resource name, null is returned.
 	**/
 	public static function getBytes( name : String ) : haxe.io.Bytes {
 		#if java
@@ -120,7 +121,8 @@ class Resource {
 		var stream = new java.io.NativeInput(stream);
 		return stream.readAll();
 		#elseif cs
-		var str:cs.system.io.Stream = untyped __cs__("typeof(haxe.Resource).Assembly.GetManifestResourceStream((string)getPaths().get(name).@value)");
+		var path = getPaths().get(name);
+		var str:cs.system.io.Stream = untyped __cs__("typeof(haxe.Resource).Assembly.GetManifestResourceStream(path)");
 		if (str != null)
 			return new cs.io.NativeInput(str).readAll();
 		return null;

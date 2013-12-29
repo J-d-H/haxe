@@ -41,37 +41,130 @@ enum Constant {
 }
 
 enum Binop {
+	/**
+		`+`
+	**/
 	OpAdd;
+	/**
+		`*`
+	**/
 	OpMult;
+	/**
+		`/`
+	**/
 	OpDiv;
+	/**
+		`-`
+	**/
 	OpSub;
+	/**
+		`=`
+	**/
 	OpAssign;
+	/**
+		`==`
+	**/
 	OpEq;
+	/**
+		`!=`
+	**/
 	OpNotEq;
+	/**
+		`>`
+	**/
 	OpGt;
+	/**
+		`>=`
+	**/
 	OpGte;
+	/**
+		`<`
+	**/
 	OpLt;
+	/**
+		`<=`
+	**/
 	OpLte;
+	/**
+		`&`
+	**/
 	OpAnd;
+	/**
+		`|`
+	**/
 	OpOr;
+	/**
+		`^`
+	**/
 	OpXor;
+	/**
+		`&&`
+	**/
 	OpBoolAnd;
+	/**
+		`||`
+	**/
 	OpBoolOr;
+	/**
+		`<<`
+	**/
 	OpShl;
+	/**
+		`>>`
+	**/
 	OpShr;
+	/**
+		`>>>`
+	**/
 	OpUShr;
+	/**
+		`%`
+	**/
 	OpMod;
+	/**
+		`+=`
+		`-=`
+		`/=`
+		`*=`
+		`<<=`
+		`>>=`
+		`>>>=`
+		`|=`
+		`&=`
+		`^=`
+	**/
 	OpAssignOp( op : Binop );
+	/**
+		`...`
+	**/
 	OpInterval;
+	/**
+		`=>`
+	**/
 	OpArrow;
 }
 
 
 enum Unop {
+	/**
+		`++`
+	**/
 	OpIncrement;
+	/**
+		`--`
+	**/
 	OpDecrement;
+	/**
+		`!`
+	**/
 	OpNot;
+	/**
+		`-`
+	**/
 	OpNeg;
+	/**
+		`~`
+	**/
 	OpNegBits;
 }
 
@@ -138,14 +231,14 @@ enum ComplexType {
 	TFunction( args : Array<ComplexType>, ret : ComplexType );
 	TAnonymous( fields : Array<Field> );
 	TParent( t : ComplexType );
-	TExtend( p : TypePath, fields : Array<Field> );
+	TExtend( p : Array<TypePath>, fields : Array<Field> );
 	TOptional( t : ComplexType );
 }
 
 typedef TypePath = {
 	var pack : Array<String>;
 	var name : String;
-	var params : Array<TypeParam>;
+	@:optional var params : Array<TypeParam>;
 	@:optional var sub : Null<String>;
 }
 
@@ -164,19 +257,19 @@ typedef Function = {
 	var args : Array<FunctionArg>;
 	var ret : Null<ComplexType>;
 	var expr : Null<Expr>;
-	var params : Array<TypeParamDecl>;
+	@:optional var params : Array<TypeParamDecl>;
 }
 
 typedef FunctionArg = {
 	var name : String;
-	var opt : Bool;
+	@:optional var opt : Bool;
 	var type : Null<ComplexType>;
 	@:optional var value : Null<Expr>;
 }
 
 typedef MetadataEntry = {
 	name : String,
-	params : Array<Expr>,
+	?params : Array<Expr>,
 	pos : Position
 }
 
@@ -211,9 +304,9 @@ typedef TypeDefinition = {
 	var pack : Array<String>;
 	var name : String;
 	var pos : Position;
-	var meta : Metadata;
-	var params : Array<TypeParamDecl>;
-	var isExtern : Bool;
+	@:optional var meta : Metadata;
+	@:optional var params : Array<TypeParamDecl>;
+	@:optional var isExtern : Bool;
 	var kind : TypeDefKind;
 	var fields : Array<Field>;
 }

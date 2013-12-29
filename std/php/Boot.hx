@@ -105,6 +105,38 @@ class _hx_array implements ArrayAccess, IteratorAggregate {
 		return false;
 	}
 
+	function indexOf($x, $fromIndex) {
+		$i = ($fromIndex === null) ? 0 : $fromIndex;
+		$len = $this->length;
+		$a = $this->a;
+		if ($i < 0) {
+			$i += $len;
+			if ($i < 0) $i = 0;
+		}
+		while ($i < $len) {
+			if ($a[$i] === $x)
+				return $i;
+			$i++;
+		}
+		return -1;
+	}
+
+	function lastIndexOf($x, $fromIndex) {
+		$len = $this->length;
+		$i = ($fromIndex === null) ? $len - 1 : $fromIndex;
+		$a = $this->a;
+		if ($i >= $len)
+			$i = $len - 1;
+		else if ($i < 0)
+			$i += $len;
+		while ($i >= 0) {
+			if ($a[$i] === $x)
+				return $i;
+			$i--;
+		}
+		return -1;
+	}
+
 	function removeAt($pos) {
 		if(array_key_exists($pos, $this->a)) {
 			unset($this->a[$pos]);
@@ -522,14 +554,7 @@ function _hx_set_method($o, $field, $func) {
 }
 
 function _hx_shift_right($v, $n) {
-	$z = 0x80000000;
-	if ($z & $v) {
-		$v = ($v>>1);
-		$v &= (~$z);
-		$v |= 0x40000000;
-		$v = ($v>>($n-1));
-	} else $v = ($v>>$n);
-	return $v;
+	return ($v >> $n) & (0x7fffffff >> ($n-1));
 }
 
 function _hx_string_call($s, $method, $params) {

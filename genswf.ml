@@ -243,7 +243,7 @@ let build_class com c file =
 							| HVInt i | HVUInt i ->
 								Some (Int (Int32.to_string i))
 							| HVFloat f ->
-								Some (Float (string_of_float f))
+								Some (Float (float_repres f))
 							) in
 							match v with
 							| None -> None
@@ -458,7 +458,7 @@ let remove_debug_infos as3 =
 
 let parse_swf com file =
 	let t = Common.timer "read swf" in
-	let is_swc = file_extension file = "swc" in
+	let is_swc = file_extension file = "swc" || file_extension file = "ane" in
 	let file = (try Common.find_file com file with Not_found -> failwith ((if is_swc then "SWC" else "SWF") ^ " Library not found : " ^ file)) in
 	let ch = if is_swc then begin
 		let zip = Zip.open_in file in
@@ -483,7 +483,7 @@ let parse_swf com file =
 	IO.close_in ch;
 	List.iter (fun t ->
 		match t.tdata with
-		| TActionScript3 (id,as3) when not com.debug && not com.display ->
+		| TActionScript3 (id,as3) when not com.debug && com.display = DMNone ->
 			t.tdata <- TActionScript3 (id,remove_debug_infos as3)
 		| _ -> ()
 	) tags;
@@ -542,7 +542,8 @@ let swf_ver = function
 	| 11.6 -> 19
 	| 11.7 -> 20
 	| 11.8 -> 21
-	| v -> failwith ("Invalid SWF version " ^ string_of_float v)
+	| 11.9 -> 22
+	| v -> failwith ("Invalid SWF version " ^ float_repres v)
 
 let convert_header com (w,h,fps,bg) =
 	let high = (max w h) * 20 in
@@ -622,13 +623,12 @@ let build_dependencies t =
 			add_type v.v_type;
 			add_expr e1;
 			add_expr e2;
-		| TVars vl ->
-			List.iter (fun (v,e) ->
+		| TVar (v,eo) ->
 				add_type v.v_type;
-				match e with
+			begin match eo with
 				| None -> ()
 				| Some e -> add_expr e
-			) vl
+			end
 		| _ ->
 			Type.iter add_expr e
 	and add_field f =
@@ -702,7 +702,7 @@ let build_swc_catalog com types =
 	let x = node "swc" ["xmlns","http://www.adobe.com/flash/swccatalog/9"] [
 		node "versions" [] [
 			node "swc" ["version","1.2"] [];
-			node "haxe" ["version",Printf.sprintf "%d.%.2d" (com.version/100) (com.version mod 100)] [];
+			node "haxe" ["version",Printf.sprintf "%d.%.2d" (com.version/10000) (com.version mod 10000)] [];
 		];
 		node "features" [] [
 			node "feature-script-deps" [] [];
@@ -844,7 +844,7 @@ let build_swf9 com file swc =
 				| (Meta.Font,(EConst (String file),p) :: args,_) :: l ->
 					let file = try Common.find_file com file with Not_found -> file in
 					let ch = try open_in_bin file with _ -> error "File not found" p in
-					let ttf = TTFParser.parse ch in
+					let ttf = try TTFParser.parse ch with e -> error ("Error while parsing font " ^ file ^ " : " ^ Printexc.to_string e) p in
 					close_in ch;
 					let range_str = match args with
 						| [EConst (String str),_] -> str

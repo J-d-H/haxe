@@ -23,8 +23,14 @@
 
 	private var b : Dynamic;
 
+	public var length(get,never) : Int;
+
 	public function new() : Void {
 		b = __make();
+	}
+
+	function get_length() : Int {
+		return __get_length == null ? untyped __dollar__ssize( __to_string(b) ) : __get_length(b);
 	}
 
 	public inline function add( x : Dynamic ) : Void {
@@ -48,5 +54,6 @@
 	static var __add_char : Dynamic = neko.Lib.load("std","buffer_add_char",2);
 	static var __add_sub : Dynamic = neko.Lib.load("std","buffer_add_sub",4);
 	static var __to_string : Dynamic = neko.Lib.load("std","buffer_string",1);
+	static var __get_length : Dynamic = try neko.Lib.load("std","buffer_get_length",1) catch( e : Dynamic ) null;
 
 }
