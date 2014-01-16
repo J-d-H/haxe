@@ -73,7 +73,7 @@ class Socket {
 	**/
 	public function connect( host : Host, port : Int ) : Void {
 		sock.Connect( host.ipAddress, port );
-		if (sock.Connected) {
+		if (sock.get_Connected()) {
 			this.output = new cs.io.NativeOutput( new NetworkStream(sock) );
 			this.input = new cs.io.NativeInput( new NetworkStream(sock) );
 		} else {
