@@ -994,7 +994,7 @@ try
 			set_platform Cpp dir;
 		),"<directory> : generate C++ code into target directory");
  		("-cs",Arg.String (fun dir ->
-			cp_libs := "hxcs" :: !cp_libs;
+			(*cp_libs := "hxcs" :: !cp_libs;*)
 			set_platform Cs dir;
 		),"<directory> : generate C# code into target directory");
 		("-java",Arg.String (fun dir ->
