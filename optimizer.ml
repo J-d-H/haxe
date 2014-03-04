@@ -42,6 +42,13 @@ let has_side_effect e =
 	with Exit ->
 		true
 
+let mk_untyped_call name p params =
+	{
+		eexpr = TCall({ eexpr = TLocal(alloc_var name t_dynamic); etype = t_dynamic; epos = p }, params);
+		etype = t_dynamic;
+		epos = p;
+	}
+
 let api_inline ctx c field params p =
 	match c.cl_path, field, params with
 	| ([],"Type"),"enumIndex",[{ eexpr = TField (_,FEnum (en,f)) }] ->
@@ -62,7 +69,7 @@ let api_inline ctx c field params p =
 			Some { eexpr = TConst (TString (if b then "true" else "false")); epos = p; etype = ctx.t.tstring }
 		| _ ->
 			None)
-	| ([],"Std"),"string",[v] when ctx.com.platform = Js ->
+	| ([],"Std"),"string",[v] when ctx.com.platform = Js || ctx.com.platform = Flash ->
 		let pos = v.epos in
 		let stringt = ctx.com.basic.tstring in
 		let stringv = mk (TBinop (Ast.OpAdd, mk (TConst (TString "")) stringt pos, v)) stringt pos in
@@ -79,6 +86,45 @@ let api_inline ctx c field params p =
 			Some stringv
 		| _ ->
 			None)
+	| ([],"Std"),"is",[o;t] | (["js"],"Boot"),"__instanceof",[o;t] when ctx.com.platform = Js ->
+		let mk_local ctx n t pos = mk (TLocal (try PMap.find n ctx.locals with _ -> add_local ctx n t)) t pos in
+
+		let tstring = ctx.com.basic.tstring in
+		let tbool = ctx.com.basic.tbool in
+		let tint = ctx.com.basic.tint in
+
+		let is_trivial e =
+			match e.eexpr with
+			| TConst _ | TLocal _ -> true
+			| _ -> false
+		in
+
+		let typeof t =
+			let tof = mk_local ctx "__typeof__" (tfun [o.etype] tstring) p in
+			let tof = mk (TCall (tof, [o])) tstring p in
+			mk (TBinop (Ast.OpEq, tof, (mk (TConst (TString t)) tstring p))) tbool p
+		in
+
+		(match t.eexpr with
+		(* generate simple typeof checks for basic types *)
+		| TTypeExpr (TClassDecl ({ cl_path = [],"String" })) -> Some (typeof "string")
+		| TTypeExpr (TAbstractDecl ({ a_path = [],"Bool" })) -> Some (typeof "boolean")
+		| TTypeExpr (TAbstractDecl ({ a_path = [],"Float" })) -> Some (typeof "number")
+		| TTypeExpr (TAbstractDecl ({ a_path = [],"Int" })) when is_trivial o ->
+			(* generate (o|0) === o check *)
+			let teq = mk_local ctx "__strict_eq__" (tfun [tint; tint] tbool) p in
+			let lhs = mk (TBinop (Ast.OpOr, o, mk (TConst (TInt Int32.zero)) tint p)) tint p in
+			Some (mk (TCall (teq, [lhs; o])) tbool p)
+		| TTypeExpr (TClassDecl ({ cl_path = [],"Array" })) ->
+			(* generate (o instanceof Array) && o.__enum__ == null check *)
+			let iof = mk_local ctx "__instanceof__" (tfun [o.etype;t.etype] tbool) p in
+			let iof = mk (TCall (iof, [o; t])) tbool p in
+			let enum = mk (TField (o, FDynamic "__enum__")) (mk_mono()) p in
+			let null = mk (TConst TNull) (mk_mono()) p in
+			let not_enum = mk (TBinop (Ast.OpEq, enum, null)) tbool p in
+			Some (mk (TBinop (Ast.OpBoolAnd, iof, not_enum)) tbool p)
+		| _ ->
+			None)
 	| ([],"Std"),"int",[{ eexpr = TConst (TFloat f) }] ->
 		let f = float_of_string f in
 		(match classify_float f with
@@ -88,6 +134,12 @@ let api_inline ctx c field params p =
 			None (* out range, keep platform-specific behavior *)
 		| _ ->
 			Some { eexpr = TConst (TInt (Int32.of_float f)); etype = ctx.t.tint; epos = p })
+	| (["cs"],"Lib"),("fixed" | "checked" | "unsafe"),[e] ->
+			Some (mk_untyped_call ("__" ^ field ^ "__") p [e])
+	| (["cs"],"Lib"),("lock"),[obj;block] ->
+			Some (mk_untyped_call ("__lock__") p [obj;block])
+	| (["java"],"Lib"),("lock"),[obj;block] ->
+			Some (mk_untyped_call ("__lock__") p [obj;block])
 	| _ ->
 		None
 
@@ -125,7 +177,7 @@ let inline_default_config cf t =
 	let tparams = fst tparams @ cf.cf_params in
 	tparams <> [], apply_params tparams tmonos
 
-let rec type_inline ctx cf f ethis params tret config p force =
+let rec type_inline ctx cf f ethis params tret config p ?(self_calling_closure=false) force =
 	(* perform some specific optimization before we inline the call since it's not possible to detect at final optimization time *)
 	try
 		let cl = (match follow ethis.etype with
@@ -206,6 +258,7 @@ let rec type_inline ctx cf f ethis params tret config p force =
 		if has_side_effect e then l.i_force_temp <- true; (* force tmp var *)
 		l, e
 	) (ethis :: loop params f.tf_args true) ((vthis,None) :: f.tf_args) in
+	let inlined_vars = List.rev inlined_vars in
 	(*
 		here, we try to eliminate final returns from the expression tree.
 		However, this is not entirely correct since we don't yet correctly propagate
@@ -223,9 +276,10 @@ let rec type_inline ctx cf f ethis params tret config p force =
 	let cancel_inlining = ref false in
 	let has_return_value = ref false in
 	let ret_val = (match follow f.tf_type with TAbstract ({ a_path = ([],"Void") },[]) -> false | _ -> true) in
+	let map_pos = if self_calling_closure then (fun e -> e) else (fun e -> { e with epos = p }) in
 	let rec map term e =
 		let po = e.epos in
-		let e = { e with epos = p } in
+		let e = map_pos e in
 		match e.eexpr with
 		| TLocal v ->
 			let l = read_local v in
@@ -406,7 +460,7 @@ let rec type_inline ctx cf f ethis params tret config p force =
 
 		This could be fixed with better post process code cleanup (planed)
 	*)
-	if !cancel_inlining then
+	if !cancel_inlining || (Common.platform ctx.com Js && not !force && (init <> None || !has_vars)) then
 		None
 	else
 		let wrap e =
@@ -699,14 +753,25 @@ let sanitize_expr com e =
 		let e1 = if loop e1 true then parent e1 else e1 in
 		let e2 = if loop e2 false then parent e2 else e2 in
 		{ e with eexpr = TBinop (op,e1,e2) }
-	| TUnop (op,mode,e2) ->
-		let rec loop ee =
-			match ee.eexpr with
-			| TBinop _ | TIf _ -> parent e2
-			| TCast (e,None) -> loop e
-			| _ -> e2
+	| TUnop (op,mode,e1) ->
+		let unop op mode e1 =
+			let rec loop ee =
+				match ee.eexpr with
+				| TBinop _ | TIf _ -> parent e1
+				| TCast (e,None) -> loop e
+				| _ -> e1
+			in
+			{ e with eexpr = TUnop (op,mode,loop e1)}
 		in
-		{ e with eexpr = TUnop (op,mode,loop e2) }
+		let rec loop e = match e.eexpr with
+			| TUnop((Not | Neg | NegBits) as op2,Prefix,e2) when op = op2 ->
+				e2
+			| TCast(e1,None) | TParenthesis(e1) | TMeta(_, e1) ->
+				loop e1
+			| _ ->
+				unop op mode e1
+		in
+		loop e1
 	| TIf (e1,e2,eelse) ->
 		let e1 = parent e1 in
 		let e2 = (if (eelse <> None && has_if e2) || (match e2.eexpr with TIf _ -> true | _ -> false) then block e2 else complex e2) in
@@ -963,13 +1028,16 @@ let rec reduce_loop ctx e =
 		let cf = mk_field "" ef.etype e.epos in
 		let ethis = mk (TConst TThis) t_dynamic e.epos in
 		let rt = (match follow ef.etype with TFun (_,rt) -> rt | _ -> assert false) in
-		let inl = (try type_inline ctx cf func ethis el rt None e.epos false with Error (Custom _,_) -> None) in
+		let inl = (try type_inline ctx cf func ethis el rt None e.epos ~self_calling_closure:true false with Error (Custom _,_) -> None) in
 		(match inl with
 		| None -> reduce_expr ctx e
 		| Some e -> reduce_loop ctx e)
 	| TCall ({ eexpr = TField (o,FClosure (c,cf)) } as f,el) ->
 		let fmode = (match c with None -> FAnon cf | Some c -> FInstance (c,cf)) in
 		{ e with eexpr = TCall ({ f with eexpr = TField (o,fmode) },el) }
+	| TSwitch (e1,[[{eexpr = TConst (TBool true)}],{eexpr = TConst (TBool true)}],Some ({eexpr = TConst (TBool false)})) ->
+		(* introduced by extractors in some cases *)
+		e1
 	| _ ->
 		reduce_expr ctx e)
 
@@ -1184,14 +1252,19 @@ let inline_constructors ctx e =
 				in
 				List.iter (fun (v,e) -> el_b := (mk (TVar(v,Some (subst e))) ctx.t.tvoid e.epos) :: !el_b) (List.rev vars);
 				mk (TVar (v_first, Some (subst e_first))) ctx.t.tvoid e.epos
-			| TField ({ eexpr = TLocal v },FInstance (_,cf)) when v.v_id < 0 ->
+			| TField ({ eexpr = TLocal v },FInstance (c,cf)) when v.v_id < 0 ->
 				let (_, vars),el_init = PMap.find (-v.v_id) vfields in
 				(try
 					let v = PMap.find cf.cf_name vars in
 					mk (TLocal v) v.v_type e.epos
 				with Not_found ->
-					(* the variable was not set in the constructor, assume null *)
-					mk (TConst TNull) e.etype e.epos)
+					if (c.cl_path = ([],"Array") && cf.cf_name = "length") then begin
+						(* this can only occur for inlined array declarations, so we can use the statically known length here (issue #2568)*)
+						let l = PMap.fold (fun _ i -> i + 1) vars 0 in
+						mk (TConst (TInt (Int32.of_int l))) ctx.t.tint e.epos
+					end else
+						(* the variable was not set in the constructor, assume null *)
+						mk (TConst TNull) e.etype e.epos)
 			| TArray ({eexpr = TLocal v},{eexpr = TConst (TInt i)}) when v.v_id < 0 ->
 				let (_, vars),_ = PMap.find (-v.v_id) vfields in
 				(try

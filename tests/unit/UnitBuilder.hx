@@ -29,7 +29,7 @@ using StringTools;
 
 class UnitBuilder {
 	
-	static public macro function build(basePath:String):Array<Field> {
+	static public macro function build(basePath:String, filter:String = ".unit.hx"):Array<Field> {
 		var ret = Context.getBuildFields();
 		var numFiles = 0;
 			
@@ -38,7 +38,7 @@ class UnitBuilder {
 			path = path.endsWith("\\") || path.endsWith("/") ? path : path + "/";
 			for (file in dir) {
 				var filePath = path + file;
-				if (file.endsWith(".unit.hx")) {
+				if (file.endsWith(filter)) {
 					numFiles++;
 					var func = {
 						args: [],
@@ -77,7 +77,7 @@ class UnitBuilder {
 	
 	static function mkEq(e1, e2, p) {
 		function isFloat(e) {
-			try return switch(Context.typeof(e)) {
+			try return switch(Context.follow(Context.typeof(e))) {
 				case TAbstract(tr, _):
 					tr.get().name == "Float";
 				case _:

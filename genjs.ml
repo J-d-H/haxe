@@ -103,7 +103,11 @@ let kwds =
 let kwds2 =
 	let h = Hashtbl.create 0 in
 	List.iter (fun s -> Hashtbl.add h s ()) [
-		"console"; "window";
+		(* https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects *)
+		"Infinity"; "NaN"; "decodeURI"; "decodeURIComponent"; "encodeURI"; "encodeURIComponent";
+		"escape"; "eval"; "isFinite"; "isNaN"; "parseFloat"; "parseInt"; "undefined"; "unescape";
+
+		"JSON"; "Number"; "Object"; "console"; "window";
 	];
 	h
 
@@ -244,6 +248,11 @@ let write_mappings ctx =
 	output_string channel ("\"sources\":[" ^
 		(String.concat "," (List.map (fun s -> "\"" ^ to_url s ^ "\"") sources)) ^
 		"],\n");
+	if Common.defined ctx.com Define.SourceMapContent then begin
+		output_string channel ("\"sourcesContent\":[" ^
+			(String.concat "," (List.map (fun s -> try "\"" ^ Ast.s_escape (Std.input_file ~bin:true s) ^ "\"" with _ -> "null") sources)) ^
+			"],\n");
+	end;
 	output_string channel "\"names\":[],\n";
 	output_string channel "\"mappings\":\"";
 	Buffer.output_buffer channel ctx.smap.mappings;
@@ -399,6 +408,24 @@ let rec gen_call ctx e el in_value =
 		print ctx " instanceof ";
 		gen_value ctx t;
 		spr ctx ")";
+	| TLocal { v_name = "__typeof__" },  [o] ->
+		spr ctx "typeof(";
+		gen_value ctx o;
+		spr ctx ")";
+	| TLocal { v_name = "__strict_eq__" } , [x;y] ->
+		(* add extra parenthesis here because of operator precedence *)
+		spr ctx "((";
+		gen_value ctx x;
+		spr ctx ") === ";
+		gen_value ctx y;
+		spr ctx ")";
+	| TLocal { v_name = "__strict_neq__" } , [x;y] ->
+		(* add extra parenthesis here because of operator precedence *)
+		spr ctx "((";
+		gen_value ctx x;
+		spr ctx ") !== ";
+		gen_value ctx y;
+		spr ctx ")";
 	| TLocal ({v_name = "__define_feature__"}), [_;e] ->
 		gen_expr ctx e
 	| TLocal { v_name = "__feature__" }, { eexpr = TConst (TString f) } :: eif :: eelse ->
@@ -512,7 +539,7 @@ and gen_expr ctx e =
 	| TBlock el ->
 		print ctx "{";
 		let bend = open_block ctx in
-		List.iter (gen_block ctx) el;
+		List.iter (gen_block_element ctx) el;
 		bend();
 		newline ctx;
 		print ctx "}";
@@ -606,7 +633,7 @@ and gen_expr ctx e =
 		let bend = open_block ctx in
 		newline ctx;
 		print ctx "var %s = %s.next()" (ident v.v_name) it;
-		gen_block ctx e;
+		gen_block_element ctx e;
 		bend();
 		newline ctx;
 		spr ctx "}";
@@ -646,7 +673,7 @@ and gen_expr ctx e =
 					newline ctx;
 					print ctx "var %s = %s" v.v_name vname;
 				end;
-				gen_block ctx e;
+				gen_block_element ctx e;
 				if !else_block then begin
 					newline ctx;
 					print ctx "}";
@@ -661,7 +688,7 @@ and gen_expr ctx e =
 					newline ctx;
 					print ctx "var %s = %s" v.v_name vname;
 				end;
-				gen_block ctx e;
+				gen_block_element ctx e;
 				bend();
 				newline ctx;
 				spr ctx "} else ";
@@ -688,7 +715,7 @@ and gen_expr ctx e =
 					spr ctx ":"
 			) el;
 			let bend = open_block ctx in
-			gen_block ctx e2;
+			gen_block_element ctx e2;
 			if not (has_return e2) then begin
 				newline ctx;
 				print ctx "break";
@@ -701,7 +728,7 @@ and gen_expr ctx e =
 		| Some e ->
 			spr ctx "default:";
 			let bend = open_block ctx in
-			gen_block ctx e;
+			gen_block_element ctx e;
 			bend();
 			newline ctx;
 		);
@@ -716,17 +743,19 @@ and gen_expr ctx e =
 		spr ctx ")"
 
 
-and gen_block ?(after=false) ctx e =
+and gen_block_element ?(after=false) ctx e =
 	match e.eexpr with
 	| TBlock el ->
-		List.iter (gen_block ~after ctx) el
+		List.iter (gen_block_element ~after ctx) el
 	| TCall ({ eexpr = TLocal { v_name = "__feature__" } }, { eexpr = TConst (TString f) } :: eif :: eelse) ->
 		if has_feature ctx f then
-			gen_block ~after ctx eif
+			gen_block_element ~after ctx eif
 		else (match eelse with
 			| [] -> ()
-			| [e] -> gen_block ~after ctx e
+			| [e] -> gen_block_element ~after ctx e
 			| _ -> assert false)
+	| TFunction _ ->
+		gen_block_element ~after ctx (mk (TParenthesis e) e.etype e.epos)
 	| _ ->
 		if not after then newline ctx;
 		gen_expr ctx e;
@@ -1073,7 +1102,9 @@ let generate_type ctx = function
 		if not c.cl_extern then
 			generate_class ctx c
 		else if not ctx.js_flatten && Meta.has Meta.InitPackage c.cl_meta then
-			generate_package_create ctx c.cl_path
+			(match c.cl_path with
+			| ([],_) -> ()
+			| _ -> generate_package_create ctx c.cl_path)
 	| TEnumDecl e when e.e_extern ->
 		()
 	| TEnumDecl e -> generate_enum ctx e
@@ -1112,10 +1143,10 @@ let alloc_ctx com =
 		separator = false;
 		found_expose = false;
 	} in
-	ctx.type_accessor <- (fun t -> 
+	ctx.type_accessor <- (fun t ->
 		let p = t_path t in
 		match t with
-		| TClassDecl { cl_extern = true } 
+		| TClassDecl { cl_extern = true }
 		| TEnumDecl { e_extern = true }
 			-> dot_path p
 		| _ -> s_path ctx p);
@@ -1243,7 +1274,7 @@ let generate com =
 		print ctx "function $bind(o,m) { if( m == null ) return null; if( m.__id__ == null ) m.__id__ = $fid++; var f; if( o.hx__closures__ == null ) o.hx__closures__ = {}; else f = o.hx__closures__[m.__id__]; if( f == null ) { f = function(){ return f.method.apply(f.scope, arguments); }; f.scope = o; f.method = m; o.hx__closures__[m.__id__] = f; } return f; }";
 		newline ctx;
 	end;
-	List.iter (gen_block ~after:true ctx) (List.rev ctx.inits);
+	List.iter (gen_block_element ~after:true ctx) (List.rev ctx.inits);
 	List.iter (generate_static ctx) (List.rev ctx.statics);
 	(match com.main with
 	| None -> ()

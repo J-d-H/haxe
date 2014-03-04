@@ -130,6 +130,21 @@ abstract Vector<T>(VectorData<T>) {
 	}
 
 	/**
+		Creates a new Array, copy the content from the Vector to it, and returns it.
+	**/
+	public #if flash inline #end function toArray():Array<T> {
+		var a = new Array();
+		var len = length;
+		#if (cpp || neko)
+		// prealloc good size
+		if( len > 0 ) a[len - 1] = get(0);
+		#end
+		for( i in 0...len )
+			a[i] = get(i);
+		return a;
+	}
+		
+	/**
 		Extracts the data of `this` Vector.
 
 		This returns the internal representation type.
@@ -158,6 +173,7 @@ abstract Vector<T>(VectorData<T>) {
 
 		If `array` is null, the result is unspecified.
 	**/
+	#if as3 @:extern #end
 	static public inline function fromArrayCopy<T>(array:Array<T>):Vector<T> {
 		// TODO: Optimize this for flash (and others?)
 		var vec = new Vector<T>(array.length);

@@ -109,11 +109,10 @@ let deprecated = [
 	"Identifier 'CType' is not part of enum haxe.macro.Constant","CType has been removed, use CIdent instead";
 	"Class not found : haxe.rtti.Infos","Use @:rtti instead of implementing haxe.rtti.Infos";
 	"Class not found : haxe.rtti.Generic","Use @:generic instead of implementing haxe.Generic";
-	"Class not found : haxe.Int32","haxe.Int32 has been removed, use normal Int instead";
 	"Class not found : flash.utils.TypedDictionary","flash.utils.TypedDictionary has been removed, use Map instead";
 	"Class not found : haxe.Stack", "haxe.Stack has been renamed to haxe.CallStack";
 	"Class not found : neko.zip.Reader", "neko.zip.Reader has been removed, use haxe.zip.Reader instead";
-	"Class not found : neko.zip.Reader", "neko.zip.Writer has been removed, use haxe.zip.Writer instead";
+	"Class not found : neko.zip.Writer", "neko.zip.Writer has been removed, use haxe.zip.Writer instead";
 	"Class not found : haxe.Public", "Use @:publicFields instead of implementing or extending haxe.Public";
 	"#Xml has no field createProlog", "Xml.createProlog was renamed to Xml.createProcessingInstruction";
 ]
@@ -927,7 +926,9 @@ try
 	let force_typing = ref false in
 	let pre_compilation = ref [] in
 	let interp = ref false in
+	let swf_version = ref false in
 	Common.define_value com Define.HaxeVer (float_repres (float_of_int version /. 10000.));
+	Common.define_value com Define.HxcppApiLevel "310";
 	Common.raw_define com "haxe3";
 	Common.define_value com Define.Dce "std";
 	com.warning <- (fun msg p -> message ctx ("Warning : " ^ msg) p);
@@ -951,7 +952,7 @@ try
 	with
 		Not_found ->
 			if Sys.os_type = "Unix" then
-				com.class_path <- ["/usr/lib/haxe/std/";"/usr/local/lib/haxe/std/";"/usr/lib/haxe/extraLibs/";"/usr/local/lib/haxe/extraLibs/";"";"/"]
+				com.class_path <- ["/usr/lib/haxe/std/";"/usr/local/lib/haxe/std/";"/usr/lib/haxe/extraLibs/";"/usr/local/lib/haxe/extraLibs/";""]
 			else
 				let base_path = normalize_path (get_real_path (try executable_path() with _ -> "./")) in
 				com.class_path <- [base_path ^ "std/";base_path ^ "extraLibs/";""]);
@@ -1037,7 +1038,8 @@ try
 			Common.define_value com Define.Dce mode
 		),"[std|full|no] : set the dead code elimination mode");
 		("-swf-version",Arg.Float (fun v ->
-			com.flash_version <- v;
+			if not !swf_version || com.flash_version < v then com.flash_version <- v;
+			swf_version := true;
 		),"<version> : change the SWF version (6 to 10)");
 		("-swf-header",Arg.String (fun h ->
 			try
@@ -1270,6 +1272,10 @@ try
 		com.error <- error ctx;
 		com.main_class <- None;
 		let real = get_real_path (!Parser.resume_display).Ast.pfile in
+		(* try to fix issue on windows when get_real_path fails (8.3 DOS names disabled) *)
+		let real = (match List.rev (ExtString.String.nsplit real "\\") with
+		| file :: path when String.length file > 0 && file.[0] >= 'a' && file.[1] <= 'z' -> file.[0] <- char_of_int (int_of_char file.[0] - int_of_char 'a' + int_of_char 'A'); String.concat "\\" (List.rev (file :: path))
+		| _ -> real) in
 		classes := lookup_classes com real;
 		if !classes = [] then begin
 			if not (Sys.file_exists real) then failwith "Display file does not exist";
@@ -1535,6 +1541,9 @@ with
 				raise (Completion c)
 			| _ ->
 				error ctx ("Could not load module " ^ (Ast.s_type_path (p,c))) Ast.null_pos)
+	| Interp.Sys_exit i ->
+		ctx.flush();
+		exit i
 	| e when (try Sys.getenv "OCAMLRUNPARAM" <> "b" || !global_cache <> None with _ -> true) && not (is_debug_run()) ->
 		error ctx (Printexc.to_string e) Ast.null_pos
 
