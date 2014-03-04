@@ -2,3 +2,6 @@
 	path = libs
 	url = ../ocamllibs
 	branch = master
+[submodule "extra/haxelib_src"]
+	path = extra/haxelib_src
+	url = ../haxelib
