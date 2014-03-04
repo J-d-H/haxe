@@ -5,3 +5,4 @@
 [submodule "extra/haxelib_src"]
 	path = extra/haxelib_src
 	url = ../haxelib
+	branch = master
