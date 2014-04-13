@@ -174,13 +174,14 @@ class Path {
 
 	/**
 		Joins all paths in `paths` together.
-		
+
 		If `paths` is empty, the empty String `""` is returned. Otherwise the
 		paths are joined with a slash between them.
-		
+
 		If `paths` is null, the result is unspecified.
 	**/
 	public static function join(paths:Array<String>) : String {
+		var paths = paths.filter(function(s) return s != null && s != "");
 		if (paths.length == 0) {
 			return "";
 		}
@@ -194,10 +195,10 @@ class Path {
 
 	/**
 		Normalize a given `path` (e.g. make '/usr/local/../lib' to '/usr/lib').
-		
+
 		Also replaces backslashes \ with slashes / and afterwards turns
 		multiple slashes into a single one.
-		
+
 		If `path` is null, the result is unspecified.
 	**/
 	public static function normalize(path : String) : String {
@@ -207,7 +208,6 @@ class Path {
 			return slash;
 		}
 
-		var prependSlash = (path.charAt(0) == slash || path.charAt(0) == '.');
 		var target = [];
 		var src;
 		var parts;
@@ -219,14 +219,38 @@ class Path {
 
 			if(token == '..') {
 				target.pop();
-			} else if(token != '' && token != '.') {
+			} else if(token != '.') {
 				target.push(token);
 			}
 		}
-		var regex = ~/\/\//g;
+
 		var tmp = target.join(slash);
-		var result = regex.replace(tmp, slash);
-		return (prependSlash ? slash : '') + result;
+		#if !flash8
+		var regex = ~/([^:])\/+/g;
+		var result = regex.replace(tmp, "$1" +slash);
+		#else
+		var acc = new StringBuf();
+		var colon = false;
+		var slashes = false;
+		for (i in 0...tmp.length) {
+			switch (tmp.charCodeAt(i)) {
+				case ":".code:
+					acc.add(":");
+					colon = true;
+				case "/".code if (colon == false):
+					slashes = true;
+				case i:
+					colon = false;
+					if (slashes) {
+						acc.add("/");
+						slashes = false;
+					}
+					acc.add(String.fromCharCode(i));
+			}
+		}
+		var result = acc.toString();
+		#end
+		return result;
 	}
 
 	/**
@@ -265,7 +289,7 @@ class Path {
 
 		If `path` is null, the result is unspecified.
 	**/
-	@:require(haxe_ver >= 3.01)
+	@:require(haxe_ver >= 3.1)
 	public static function removeTrailingSlashes ( path : String ) : String {
 		while (true) {
 			switch(path.charCodeAt(path.length - 1)) {

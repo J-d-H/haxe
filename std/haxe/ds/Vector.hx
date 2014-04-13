@@ -21,6 +21,10 @@
  */
 package haxe.ds;
 
+#if cpp
+using cpp.NativeArray;
+#end
+
 private typedef VectorData<T> = #if flash10
 	flash.Vector<T>
 #elseif neko
@@ -37,13 +41,12 @@ private typedef VectorData<T> = #if flash10
 	A Vector is a storage of fixed size. It can be faster than Array on some
 	targets, and is never slower.
 **/
-@:arrayAccess
 abstract Vector<T>(VectorData<T>) {
 	/**
 		Creates a new Vector of length `length`.
 
 		Initially `this` Vector contains `length` neutral elements:
-			
+
 		- always null on dynamic targets
 		- 0, 0.0 or false for Int, Float and Bool respectively on static targets
 		- null for other types on static targets
@@ -75,8 +78,12 @@ abstract Vector<T>(VectorData<T>) {
 		If `index` is negative or exceeds `this.length`, the result is
 		unspecified.
 	**/
-	public inline function get(index:Int):Null<T> {
+	@:arrayAccess public inline function get(index:Int):Null<T> {
+		#if cpp
+		return this.unsafeGet(index);
+		#else
 		return this[index];
+		#end
 	}
 
 	/**
@@ -85,8 +92,12 @@ abstract Vector<T>(VectorData<T>) {
 		If `index` is negative or exceeds `this.length`, the result is
 		unspecified.
 	**/
-	public inline function set(index:Int, val:T):T {
+	@:arrayAccess public inline function set(index:Int, val:T):T {
+		#if cpp
+		return this.unsafeSet(index,val);
+		#else
 		return this[index] = val;
+		#end
 	}
 
 	/**
@@ -113,7 +124,7 @@ abstract Vector<T>(VectorData<T>) {
 		The results are unspecified if `length` results in out-of-bounds access,
 		or if `src` or `dest` are null
 	**/
-	public static #if (cs || java || neko) inline #end function blit<T>(src:Vector<T>, srcPos:Int, dest:Vector<T>, destPos:Int, len:Int):Void
+	public static #if (cs || java || neko || cpp) inline #end function blit<T>(src:Vector<T>, srcPos:Int, dest:Vector<T>, destPos:Int, len:Int):Void
 	{
 		#if neko
 			untyped __dollar__ablit(dest,destPos,src,srcPos,len);
@@ -121,6 +132,8 @@ abstract Vector<T>(VectorData<T>) {
 			java.lang.System.arraycopy(src, srcPos, dest, destPos, len);
 		#elseif cs
 			cs.system.Array.Copy(cast src, srcPos,cast dest, destPos, len);
+		#elseif cpp
+			dest.toData().blit(destPos,src.toData(), srcPos,len);
 		#else
 			for (i in 0...len)
 			{
@@ -132,18 +145,22 @@ abstract Vector<T>(VectorData<T>) {
 	/**
 		Creates a new Array, copy the content from the Vector to it, and returns it.
 	**/
-	public #if flash inline #end function toArray():Array<T> {
-		var a = new Array();
-		var len = length;
-		#if (cpp || neko)
-		// prealloc good size
-		if( len > 0 ) a[len - 1] = get(0);
+	public #if (flash || cpp) inline #end function toArray():Array<T> {
+		#if cpp
+			return this.copy();
+		#else
+			var a = new Array();
+			var len = length;
+			#if (neko)
+			// prealloc good size
+			if( len > 0 ) a[len - 1] = get(0);
+			#end
+			for( i in 0...len )
+				a[i] = get(i);
+			return a;
 		#end
-		for( i in 0...len )
-			a[i] = get(i);
-		return a;
 	}
-		
+
 	/**
 		Extracts the data of `this` Vector.
 

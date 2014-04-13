@@ -2056,7 +2056,7 @@ struct
                           { e with eexpr = TBlock( (add_fn hd) :: tl ) }
                         | _ ->
                           { e with eexpr = TBlock( funs @ (hd :: tl) ) })
-                      | _ -> Codegen.concat { e with eexpr = TBlock(funs) } e
+                      | _ -> Type.concat { e with eexpr = TBlock(funs) } e
                     in
                     let tf_expr = add_fn (mk_block tf.tf_expr) in
                     { e with eexpr = TFunction({ tf with tf_expr = tf_expr }) }
@@ -2482,7 +2482,8 @@ struct
 
   let priority_as_synf = solve_deps name [DBefore DynamicOperators.priority_as_synf; DBefore DynamicFieldAccess.priority_as_synf]
 
-  let default_implementation gen (should_change:texpr->bool) (get_fun:string) (set_fun:string) =
+  (* should change signature: tarray expr -> binop operation -> should change? *)
+  let default_implementation gen (should_change:texpr->Ast.binop option->bool) (get_fun:string) (set_fun:string) =
     let basic = gen.gcon.basic in
     let mk_get e e1 e2 =
       let efield = mk_field_access gen e1 get_fun e.epos in
@@ -2496,10 +2497,10 @@ struct
       match e.eexpr with
         | TArray(e1, e2) ->
           (* e1 should always be a var; no need to map there *)
-          if should_change e then mk_get e (run e1) (run e2) else Type.map_expr run e
-        | TBinop (Ast.OpAssign, ({ eexpr = TArray(e1a,e2a) } as earray), evalue) when should_change earray ->
+          if should_change e None then mk_get e (run e1) (run e2) else Type.map_expr run e
+        | TBinop (Ast.OpAssign, ({ eexpr = TArray(e1a,e2a) } as earray), evalue) when should_change earray (Some Ast.OpAssign) ->
           mk_set e (run e1a) (run e2a) (run evalue)
-        | TBinop (Ast.OpAssignOp op,({ eexpr = TArray(e1a,e2a) } as earray) , evalue) when should_change earray ->
+        | TBinop (Ast.OpAssignOp op,({ eexpr = TArray(e1a,e2a) } as earray) , evalue) when should_change earray (Some (Ast.OpAssignOp op)) ->
           (* cache all arguments in vars so they don't get executed twice *)
           (* let ensure_local gen block name e = *)
           let block = ref [] in
@@ -2510,7 +2511,7 @@ struct
 
           { e with eexpr = TBlock (List.rev !block) }
         | TUnop(op, flag, ({ eexpr = TArray(e1a, e2a) } as earray)) ->
-          if should_change earray && match op with | Not | Neg -> false | _ -> true then begin
+          if should_change earray None && match op with | Not | Neg -> false | _ -> true then begin
 
             let block = ref [] in
 
@@ -2599,10 +2600,10 @@ struct
               match follow v.v_type with
                 | TDynamic _ ->
                   assert (is_none catchall);
-                  (nowrap_catches, must_wrap_catches, Some(v,catch_map v (run catch)))
+                  (nowrap_catches, must_wrap_catches, Some(v,run catch))
                 (* see if we should unwrap it *)
                 | _ when should_wrap (follow v.v_type) ->
-                  (nowrap_catches, (v,catch_map v (run catch)) :: must_wrap_catches, catchall)
+                  (nowrap_catches, (v,run catch) :: must_wrap_catches, catchall)
                 | _ ->
                   ( (v,catch_map v (run catch)) :: nowrap_catches, must_wrap_catches, catchall )
             ) ([], [], None) catches
@@ -2644,11 +2645,11 @@ struct
                   | [] ->
                     match catchall with
                       | Some (v,s) ->
-                        Codegen.concat { eexpr = TVar(v, Some(catchall_local)); etype = gen.gcon.basic.tvoid; epos = pos } s
+                        Type.concat { eexpr = TVar(v, Some(catchall_local)); etype = gen.gcon.basic.tvoid; epos = pos } s
                       | None ->
                         mk_block (rethrow_expr temp_local)
                 in
-                [ ( temp_var, { e with eexpr = TBlock([ catchall_decl; if_is_wrapper_expr; loop must_wrap_catches ]) } ) ]
+                [ ( temp_var, catch_map temp_var { e with eexpr = TBlock([ catchall_decl; if_is_wrapper_expr; loop must_wrap_catches ]) } ) ]
               | _ ->
                 []
             in
@@ -3429,7 +3430,7 @@ struct
         *)
         let real_get_args = gen.gexpr_filters#run_f { eexpr = TBlock(get_args); etype = basic.tvoid; epos = pos } in
 
-        let func_expr = Codegen.concat real_get_args tf_expr in
+        let func_expr = Type.concat real_get_args tf_expr in
 
         (* set invoke function *)
         (* todo properly abstract how naming for invoke is made *)
@@ -5132,7 +5133,7 @@ struct
     let block = if flag = Ast.NormalWhile then
       { e1 with eexpr = TIf(cond, e1, Some({ e1 with eexpr = TBreak; etype = basic.tvoid })) }
     else
-      Codegen.concat e1 { e1 with
+      Type.concat e1 { e1 with
         eexpr = TIf({
           eexpr = TUnop(Ast.Not, Ast.Prefix, mk_paren cond);
           etype = basic.tbool;
@@ -5713,6 +5714,9 @@ struct
         mk_cast to_t e)
       | TAbstract (a_to, _), TAbstract(a_from, _) when a_to == a_from ->
         e
+      | TAbstract _, TInst({ cl_kind = KTypeParameter _ }, _)
+      | TInst({ cl_kind = KTypeParameter _ }, _), TAbstract _ ->
+        do_unsafe_cast()
       | TAbstract _, _
       | _, TAbstract _ ->
         (try
@@ -7357,6 +7361,14 @@ struct
         let do_field cf cf_type is_static =
           let get_field ethis = { eexpr = TField (ethis, if is_static then FStatic (cl, cf) else FInstance(cl, cf)); etype = cf_type; epos = pos } in
           let this = if is_static then mk_classtype_access cl pos else { eexpr = TConst(TThis); etype = t; epos = pos } in
+          let value_local = if is_float then match follow cf_type with
+            | TInst({ cl_kind = KTypeParameter _ }, _) ->
+              mk_cast t_dynamic value_local
+            | _ ->
+              value_local
+            else
+              value_local
+          in
 
           let ret =
           {
@@ -7449,7 +7461,7 @@ struct
         let do_field cf cf_type static =
           let this = if static then mk_classtype_access cl pos else { eexpr = TConst(TThis); etype = t; epos = pos } in
           match is_float, follow cf_type with
-            | true, TInst( { cl_kind = KTypeParameter _ }, [] ) ->
+            | true, TInst( { cl_kind = KTypeParameter _ }, _ ) ->
               mk_return (mk_cast basic.tfloat (mk_cast t_dynamic (get_field cf cf_type this cl cf.cf_name)))
             | _ ->
               mk_return (maybe_cast (get_field cf cf_type this cl cf.cf_name ))
@@ -9042,7 +9054,7 @@ struct
               {
                 eexpr = TWhile(
                   { eexpr = TCall(mk_access gen temp "hasNext" in_expr.epos, []); etype = basic.tbool; epos = in_expr.epos },
-                  Codegen.concat ({
+                  Type.concat ({
                     eexpr = TVar(var, Some({ eexpr = TCall(mk_access gen temp "next" in_expr.epos, []); etype = var.v_type; epos = in_expr.epos }));
                     etype = basic.tvoid;
                     epos = in_expr.epos
@@ -9153,11 +9165,15 @@ struct
               | (conds,e) :: tl ->
                 { eexpr = TIf(mk_many_cond conds, run e, Some(loop tl)); etype = e.etype; epos = e.epos }
               | [] -> match default with
-                | None -> gen.gcon.error "Empty switch" e.epos; assert false
+                | None ->
+									raise Exit
                 | Some d -> run d
             in
 
-            { e with eexpr = TBlock(fst_block @ [loop cases]) }
+						try
+							{ e with eexpr = TBlock(fst_block @ [loop cases]) }
+						with | Exit ->
+							{ e with eexpr = TBlock [] }
           end
         | _ -> Type.map_expr run e
     in
@@ -9386,7 +9402,7 @@ struct
                 | Some t1, Some t2 ->
                   (match op with
                     | Ast.OpAssign ->
-                      { e with eexpr = TBinop( op, run e1, handle_wrap ( handle_unwrap t2 (run e2) ) t1 ) }
+                      Type.map_expr run e
                     | Ast.OpAssignOp op ->
                       (match e1.eexpr with
                         | TLocal _ ->
@@ -9719,7 +9735,7 @@ struct
       (fun (expr,kind) ->
         match kind with
           | Normal when has_fallback expr -> expr
-          | Normal -> Codegen.concat expr (mk_sbreak expr.epos)
+          | Normal -> Type.concat expr (mk_sbreak expr.epos)
           | BreaksLoop | BreaksFunction -> expr
       )
     else
@@ -9758,7 +9774,7 @@ struct
         | TFunction tf ->
           let changed, kind = process_expr tf.tf_expr in
           let changed = if handle_not_final_returns && not (is_void tf.tf_type) && kind <> BreaksFunction then
-            Codegen.concat changed { eexpr = TReturn( Some (null tf.tf_type expr.epos) ); etype = basic.tvoid; epos = expr.epos }
+            Type.concat changed { eexpr = TReturn( Some (null tf.tf_type expr.epos) ); etype = basic.tvoid; epos = expr.epos }
           else
             changed
           in
@@ -9976,7 +9992,7 @@ struct
                   { tf.tf_expr with eexpr = TBlock((if !found then { super with eexpr = TCall(e1,args) } else super) :: !block @ tl) }
                 | _ -> assert false)
               with | Not_found ->
-                Codegen.concat { tf.tf_expr with eexpr = TBlock(!block); etype = basic.tvoid } tf.tf_expr
+                Type.concat { tf.tf_expr with eexpr = TBlock(!block); etype = basic.tvoid } tf.tf_expr
             in
 
             args := fun_args tf_args;
@@ -10540,7 +10556,7 @@ struct
                 f.cf_expr <- Some({ e with
                   eexpr = TFunction({ tf with
                     tf_args = List.rev new_args;
-                    tf_expr = Codegen.concat { eexpr = TBlock(List.map (fun (v,ve) -> { eexpr = TVar(v,ve); etype = gen.gcon.basic.tvoid; epos = e.epos }) vardecl); etype = gen.gcon.basic.tvoid; epos = e.epos } tf.tf_expr
+                    tf_expr = Type.concat { eexpr = TBlock(List.map (fun (v,ve) -> { eexpr = TVar(v,ve); etype = gen.gcon.basic.tvoid; epos = e.epos }) vardecl); etype = gen.gcon.basic.tvoid; epos = e.epos } tf.tf_expr
                   });
                 });
                 f

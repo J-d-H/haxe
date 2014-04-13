@@ -69,21 +69,29 @@ let api_inline ctx c field params p =
 			Some { eexpr = TConst (TString (if b then "true" else "false")); epos = p; etype = ctx.t.tstring }
 		| _ ->
 			None)
-	| ([],"Std"),"string",[v] when ctx.com.platform = Js || ctx.com.platform = Flash ->
+	| ([],"Std"),"string",[{ eexpr = TIf (_,{ eexpr = TConst (TString _)},Some { eexpr = TConst (TString _) }) } as e] ->
+		Some e
+ 	| ([],"Std"),"string",[{ eexpr = TLocal _ | TField({ eexpr = TLocal _ },_) } as v] when ctx.com.platform = Js || ctx.com.platform = Flash ->
 		let pos = v.epos in
-		let stringt = ctx.com.basic.tstring in
-		let stringv = mk (TBinop (Ast.OpAdd, mk (TConst (TString "")) stringt pos, v)) stringt pos in
+		let stringv() =
+			let to_str = mk (TBinop (Ast.OpAdd, mk (TConst (TString "")) ctx.t.tstring pos, v)) ctx.t.tstring pos in
+			if ctx.com.platform = Js || is_nullable v.etype then
+				let chk_null = mk (TBinop (Ast.OpEq, v, mk (TConst TNull) t_dynamic pos)) ctx.t.tbool pos in
+				mk (TIf (chk_null, mk (TConst (TString "null")) ctx.t.tstring pos, Some to_str)) ctx.t.tstring pos
+			else
+				to_str
+		in
 		(match follow v.etype with
 		| TInst ({ cl_path = [],"String" }, []) ->
-			Some v
+			Some (stringv())
 		| TAbstract ({ a_path = [],"Float" }, []) ->
-			Some stringv
+			Some (stringv())
 		| TAbstract ({ a_path = [],"Int" }, []) ->
-			Some stringv
+			Some (stringv())
 		| TAbstract ({ a_path = [],"UInt" }, []) ->
-			Some stringv
+			Some (stringv())
 		| TAbstract ({ a_path = [],"Bool" }, []) ->
-			Some stringv
+			Some (stringv())
 		| _ ->
 			None)
 	| ([],"Std"),"is",[o;t] | (["js"],"Boot"),"__instanceof",[o;t] when ctx.com.platform = Js ->
@@ -499,6 +507,11 @@ let rec type_inline ctx cf f ethis params tret config p ?(self_calling_closure=f
 				let el_v = List.map (fun (v,eo) -> mk (TVar (v,eo)) ctx.t.tvoid e.epos) vl in
 				mk (TBlock (el_v @ [e])) tret e.epos
 		) in
+		let inline_meta e meta = match meta with
+			| Meta.Deprecated,_,_ -> mk (TMeta(meta,e)) e.etype e.epos
+			| _ -> e
+		in
+		let e = List.fold_left inline_meta e cf.cf_meta in
 		(* we need to replace type-parameters that were used in the expression *)
 		if not has_params then
 			Some e
@@ -541,7 +554,7 @@ let rec optimize_for_loop ctx i e1 e2 p =
 	let mk_field e n =
 		TField (e,try quick_field e.etype n with Not_found -> assert false)
 	in
-	let gen_int_iter pt =
+	let gen_int_iter pt f_get f_length =
 		let i = add_local ctx i pt in
 		let index = gen_local ctx t_int in
 		let arr, avars = (match e1.eexpr with
@@ -552,21 +565,14 @@ let rec optimize_for_loop ctx i e1 e2 p =
 		) in
 		let iexpr = mk (TLocal index) t_int p in
 		let e2 = type_expr ctx e2 NoValue in
-		let aget = mk (TVar (i,Some (mk (TArray (arr,iexpr)) pt p))) t_void p in
+		let aget = mk (TVar (i,Some (f_get arr iexpr pt p))) t_void p in
 		let incr = mk (TUnop (Increment,Prefix,iexpr)) t_int p in
 		let block = match e2.eexpr with
 			| TBlock el -> mk (TBlock (aget :: incr :: el)) t_void e2.epos
 			| _ -> mk (TBlock [aget;incr;e2]) t_void p
 		in
 		let ivar = Some (mk (TConst (TInt 0l)) t_int p) in
-		let elength = match follow e1.etype with
-			| TAbstract({a_impl = Some c},_) ->
-				let ta = TAnon { a_fields = c.cl_statics; a_status = ref (Statics c) } in
-				let ethis = mk (TTypeExpr (TClassDecl c)) ta e1.epos in
-				let efield = mk (mk_field ethis "get_length") (tfun [arr.etype] t_int) p in
-				make_call ctx efield [arr] t_int e1.epos
-			| _ -> mk (mk_field arr "length") t_int p
-		in
+		let elength = f_length arr p in
 		let el = [mk (TWhile (
 				mk (TBinop (OpLt, iexpr, elength)) ctx.t.tbool p,
 				block,
@@ -576,6 +582,12 @@ let rec optimize_for_loop ctx i e1 e2 p =
 		let el = match avars with None -> el | Some (v,eo) -> (mk (TVar (v,eo)) t_void p) :: el in
 		let el = (mk (TVar (index,ivar)) t_void p) :: el in
 		lblock el
+	in
+	let get_next_array_element arr iexpr pt p =
+		(mk (TArray (arr,iexpr)) pt p)
+	in
+	let get_array_length arr p =
+		mk (mk_field arr "length") ctx.com.basic.tint p
 	in
 	match e1.eexpr, follow e1.etype with
 	| TNew ({ cl_path = ([],"IntIterator") },[],[i1;i2]) , _ ->
@@ -634,11 +646,42 @@ let rec optimize_for_loop ctx i e1 e2 p =
 			])
 	| _ , TInst({ cl_path = [],"Array" },[pt])
 	| _ , TInst({ cl_path = ["flash"],"Vector" },[pt]) ->
-		gen_int_iter pt
+		gen_int_iter pt get_next_array_element get_array_length
 	| _ , TInst({ cl_array_access = Some pt } as c,pl) when (try match follow (PMap.find "length" c.cl_fields).cf_type with TAbstract ({ a_path = [],"Int" },[]) -> true | _ -> false with Not_found -> false) && not (PMap.mem "iterator" c.cl_fields) ->
-		gen_int_iter (apply_params c.cl_types pl pt)
-	| (TLocal _ | TField _), TAbstract({a_impl = Some c} as a,[pt]) when Meta.has Meta.ArrayAccess a.a_meta && (try match follow (PMap.find "length" c.cl_statics).cf_type with TAbstract ({ a_path = [],"Int" },[]) -> true | _ -> false with Not_found -> false) && not (PMap.mem "iterator" c.cl_statics) ->
-		gen_int_iter pt
+		gen_int_iter (apply_params c.cl_types pl pt) get_next_array_element get_array_length
+	| _, TAbstract({a_impl = Some c} as a,tl) ->
+		begin try
+			let cf_length = PMap.find "get_length" c.cl_statics in
+			let get_length e p =
+				make_static_call ctx c cf_length (apply_params a.a_types tl) [e] ctx.com.basic.tint p
+			in
+			begin match follow cf_length.cf_type with
+				| TFun(_,tr) ->
+					begin match follow tr with
+						| TAbstract({a_path = [],"Int"},_) -> ()
+						| _ -> raise Not_found
+					end
+				| _ ->
+					raise Not_found
+			end;
+			begin try
+				(* first try: do we have an @:arrayAccess getter field? *)
+				let cf,tf,r = find_array_access a tl ctx.com.basic.tint (mk_mono()) false in
+				let get_next e_base e_index t p =
+					make_static_call ctx c cf (apply_params a.a_types tl) [e_base;e_index] r p
+				in
+				gen_int_iter r get_next get_length
+			with Not_found ->
+				(* second try: do we have @:arrayAccess on the abstract itself? *)
+				if not (Meta.has Meta.ArrayAccess a.a_meta) then raise Not_found;
+				(* let's allow this only for core-type abstracts *)
+				if not (Meta.has Meta.CoreType a.a_meta) then raise Not_found;
+				(* in which case we assume that a singular type parameter is the element type *)
+				let t = match tl with [t] -> t | _ -> raise Not_found in
+				gen_int_iter t get_next_array_element get_length
+		end with Not_found ->
+			None
+		end
 	| _ , TInst ({ cl_kind = KGenericInstance ({ cl_path = ["haxe";"ds"],"GenericStack" },[t]) } as c,[]) ->
 		let tcell = (try (PMap.find "head" c.cl_fields).cf_type with Not_found -> assert false) in
 		let i = add_local ctx i t in
@@ -754,24 +797,13 @@ let sanitize_expr com e =
 		let e2 = if loop e2 false then parent e2 else e2 in
 		{ e with eexpr = TBinop (op,e1,e2) }
 	| TUnop (op,mode,e1) ->
-		let unop op mode e1 =
-			let rec loop ee =
-				match ee.eexpr with
-				| TBinop _ | TIf _ -> parent e1
-				| TCast (e,None) -> loop e
-				| _ -> e1
-			in
-			{ e with eexpr = TUnop (op,mode,loop e1)}
+		let rec loop ee =
+			match ee.eexpr with
+			| TBinop _ | TIf _ | TUnop _ -> parent e1
+			| TCast (e,None) -> loop e
+			| _ -> e1
 		in
-		let rec loop e = match e.eexpr with
-			| TUnop((Not | Neg | NegBits) as op2,Prefix,e2) when op = op2 ->
-				e2
-			| TCast(e1,None) | TParenthesis(e1) | TMeta(_, e1) ->
-				loop e1
-			| _ ->
-				unop op mode e1
-		in
-		loop e1
+		{ e with eexpr = TUnop (op,mode,loop e1)}
 	| TIf (e1,e2,eelse) ->
 		let e1 = parent e1 in
 		let e2 = (if (eelse <> None && has_if e2) || (match e2.eexpr with TIf _ -> true | _ -> false) then block e2 else complex e2) in

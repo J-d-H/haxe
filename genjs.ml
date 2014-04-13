@@ -89,12 +89,12 @@ let s_path ctx = if ctx.js_flatten then flat_path else dot_path
 let kwds =
 	let h = Hashtbl.create 0 in
 	List.iter (fun s -> Hashtbl.add h s ()) [
-		(* JS reserved words: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Reserved_Words *)
-		"break"; "case"; "catch"; "class"; "const"; "continue"; "debugger"; "default"; "delete";
-		"do"; "else"; "enum"; "export"; "extends"; "finally"; "for"; "function"; "if"; "implements";
-		"import"; "in"; "instanceof"; "interface"; "let"; "new"; "package"; "private"; "protected";
-		"public"; "return"; "static"; "super"; "switch"; "this"; "throw"; "try"; "typeof"; "var";
-		"void"; "while"; "with"; "yield";
+		"abstract"; "as"; "boolean"; "break"; "byte"; "case"; "catch"; "char"; "class"; "continue"; "const";
+		"debugger"; "default"; "delete"; "do"; "double"; "else"; "enum"; "export"; "extends"; "false"; "final";
+		"finally"; "float"; "for"; "function"; "goto"; "if"; "implements"; "import"; "in"; "instanceof"; "int";
+		"interface"; "is"; "let"; "long"; "namespace"; "native"; "new"; "null"; "package"; "private"; "protected";
+		"public"; "return"; "short"; "static"; "super"; "switch"; "synchronized"; "this"; "throw"; "throws";
+		"transient"; "true"; "try"; "typeof"; "use"; "var"; "void"; "volatile"; "while"; "with"; "yield"
 	];
 	h
 
@@ -287,7 +287,7 @@ let fun_block ctx f p =
 	let e = List.fold_left (fun e (a,c) ->
 		match c with
 		| None | Some TNull -> e
-		| Some c -> Codegen.concat (Codegen.set_default ctx.com a c p) e
+		| Some c -> Type.concat (Codegen.set_default ctx.com a c p) e
 	) f.tf_expr f.tf_args in
 	e
 
@@ -1067,17 +1067,32 @@ let generate_enum ctx e =
 		(match f.ef_type with
 		| TFun (args,_) ->
 			let sargs = String.concat "," (List.map (fun (n,_,_) -> ident n) args) in
-			print ctx "function(%s) { var $x = [\"%s\",%d,%s]; $x.__enum__ = %s; $x.toString = $estr; return $x; }" sargs f.ef_name f.ef_index sargs p;
+			print ctx "function(%s) { var $x = [\"%s\",%d,%s]; $x.__enum__ = %s;" sargs f.ef_name f.ef_index sargs p;
+			if has_feature ctx "may_print_enum" then
+				spr ctx " $x.toString = $estr;";
+			spr ctx " return $x; }";
 			ctx.separator <- true;
 		| _ ->
 			print ctx "[\"%s\",%d]" f.ef_name f.ef_index;
 			newline ctx;
-			print ctx "%s%s.toString = $estr" p (field f.ef_name);
-			newline ctx;
+			if has_feature ctx "may_print_enum" then begin
+				print ctx "%s%s.toString = $estr" p (field f.ef_name);
+				newline ctx;
+			end;
 			print ctx "%s%s.__enum__ = %s" p (field f.ef_name) p;
 		);
 		newline ctx
 	) e.e_names;
+	if has_feature ctx "Type.allEnums" then begin
+		let ctors_without_args = List.filter (fun s ->
+			let ef = PMap.find s e.e_constrs in
+			match follow ef.ef_type with
+				| TFun _ -> false
+				| _ -> true
+		) e.e_names in
+		print ctx "%s.__empty_constructs__ = [%s]" p (String.concat "," (List.map (fun s -> Printf.sprintf "%s.%s" p s) ctors_without_args));
+		newline ctx
+	end;
 	match Codegen.build_metadata ctx.com (TEnumDecl e) with
 	| None -> ()
 	| Some e ->
@@ -1208,7 +1223,7 @@ let generate com =
 
 		(* Wrap output in a closure *)
 		if (anyExposed && (Common.defined com Define.ShallowExpose)) then (
-			print ctx "var $hx_exports = {}";
+			print ctx "var $hx_exports = $hx_exports || {}";
 			ctx.separator <- true;
 			newline ctx
 		);
@@ -1216,26 +1231,23 @@ let generate com =
 		if (anyExposed && not (Common.defined com Define.ShallowExpose)) then print ctx "$hx_exports";
 		print ctx ") { \"use strict\"";
 		newline ctx;
-		let rec print_obj { os_fields = fields } = (
-			print ctx "{";
-			concat ctx "," (fun ({ os_name = name } as f) -> print ctx "%s" (name ^ ":"); print_obj f) fields;
-			print ctx "}";
+		let rec print_obj f root = (
+			let path = root ^ "." ^ f.os_name in
+			print ctx "%s = %s || {}" path path;
+			ctx.separator <- true;
+			newline ctx;
+			concat ctx ";" (fun g -> print_obj g path) f.os_fields
 		)
 		in
-		List.iter (fun f ->
-			print ctx "$hx_exports.%s = " f.os_name;
-			print_obj f;
-			ctx.separator <- true;
-			newline ctx
-		) exposedObject.os_fields;
+		List.iter (fun f -> print_obj f "$hx_exports") exposedObject.os_fields;
 	end;
 
 	(* TODO: fix $estr *)
 	let vars = [] in
 	let vars = (if has_feature ctx "Type.resolveClass" || has_feature ctx "Type.resolveEnum" then ("$hxClasses = " ^ (if ctx.js_modern then "{}" else "$hxClasses || {}")) :: vars else vars) in
-	let vars = (if List.exists (function TEnumDecl { e_extern = false } -> true | _ -> false) com.types
+	let vars = if has_feature ctx "may_print_enum"
 		then ("$estr = function() { return " ^ (ctx.type_accessor (TClassDecl { null_class with cl_path = ["js"],"Boot" })) ^ ".__string_rec(this,''); }") :: vars
-		else vars) in
+		else vars in
 	(match List.rev vars with
 	| [] -> ()
 	| vl ->

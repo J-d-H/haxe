@@ -77,7 +77,7 @@ let make_module ctx mpath file tdecls loadp =
 				e_constrs = PMap.empty;
 				e_names = [];
 				e_type = {
-					t_path = fst path, "Enum<" ^ (snd path) ^ ">";
+					t_path = [], "Enum<" ^ (s_type_path path) ^ ">";
 					t_module = m;
 					t_doc = None;
 					t_pos = p;
@@ -766,17 +766,16 @@ let check_overloads ctx c =
 		) (f :: f.cf_overloads)) (c.cl_ordered_fields @ c.cl_ordered_statics)
 
 let check_overriding ctx c =
-	let p = c.cl_pos in
 	match c.cl_super with
 	| None ->
 		(match c.cl_overrides with
 		| [] -> ()
 		| i :: _ ->
-			display_error ctx ("Field " ^ i.cf_name ^ " is declared 'override' but doesn't override any field") p)
+			display_error ctx ("Field " ^ i.cf_name ^ " is declared 'override' but doesn't override any field") i.cf_pos)
 	| Some (csup,params) ->
 		PMap.iter (fun i f ->
+			let p = f.cf_pos in
 			let check_field f get_super_field is_overload = try
-				let p = f.cf_pos in
 				(if is_overload && not (Meta.has Meta.Overload f.cf_meta) then
 					display_error ctx ("Missing @:overload declaration for field " ^ i) p);
 				let t, f2 = get_super_field csup i in
@@ -993,7 +992,7 @@ let check_extends ctx c t p = match follow t with
 		end
 	| _ -> error "Should extend by using a class" p
 
-let rec add_constructor ctx c p =
+let rec add_constructor ctx c force_constructor p =
 	match c.cl_constructor, c.cl_super with
 	| None, Some ({ cl_constructor = Some cfsup } as csup,cparams) when not c.cl_extern ->
 		let cf = {
@@ -1047,6 +1046,18 @@ let rec add_constructor ctx c p =
 		cf.cf_type <- TLazy r;
 		c.cl_constructor <- Some cf;
 		delay ctx PForce (fun() -> ignore((!r)()));
+	| None,_ when force_constructor ->
+		let constr = mk (TFunction {
+			tf_args = [];
+			tf_type = ctx.t.tvoid;
+			tf_expr = mk (TBlock []) ctx.t.tvoid p;
+		}) (tfun [] ctx.t.tvoid) p in
+		let cf = mk_field "new" constr.etype p in
+		cf.cf_expr <- Some constr;
+		cf.cf_type <- constr.etype;
+		cf.cf_meta <- [Meta.CompilerGenerated,[],p];
+		cf.cf_kind <- Method MethNormal;
+		c.cl_constructor <- Some cf;
 	| _ ->
 		(* nothing to do *)
 		()
@@ -1088,7 +1099,7 @@ let set_heritance ctx c herits p =
 				intf.cl_build();
 				if is_parent c intf then error "Recursive class" p;
 				if c.cl_interface then error "Interfaces cannot implement another interface (use extends instead)" p;
-				if not intf.cl_interface then error "You can only implements an interface" p;
+				if not intf.cl_interface then error "You can only implement an interface" p;
 				process_meta intf;
 				c.cl_implements <- (intf, params) :: c.cl_implements;
 				if not !has_interf then begin
@@ -1220,16 +1231,34 @@ let type_function ctx args ret fmode f do_display p =
 	in
 	let has_super_constr() =
 		match ctx.curclass.cl_super with
-		| None -> false
-		| Some (csup,_) ->
-			try ignore(get_constructor (fun f->f.cf_type) csup); true with Not_found -> false
+		| None ->
+			None
+		| Some (csup,tl) ->
+			try
+				let _,cf = get_constructor (fun f->f.cf_type) csup in
+				Some (Meta.has Meta.CompilerGenerated cf.cf_meta,TInst(csup,tl))
+			with Not_found ->
+				None
 	in
-	if fmode = FunConstructor && has_super_constr() then
-		(try
-			loop e;
-			display_error ctx "Missing super constructor call" p
-		with
-			Exit -> ());
+	let e = if fmode <> FunConstructor then
+		e
+	else match has_super_constr() with
+		| Some (was_forced,t_super) ->
+			(try
+				loop e;
+				if was_forced then
+					let e_super = mk (TConst TSuper) t_super e.epos in
+					let e_super_call = mk (TCall(e_super,[])) ctx.t.tvoid e.epos in
+					concat e_super_call e
+				else begin
+					display_error ctx "Missing super constructor call" p;
+					e
+				end
+			with
+				Exit -> e);
+		| None ->
+			e
+	in
 	locals();
 	let e = match ctx.curfun, ctx.vthis with
 		| (FunMember|FunConstructor), Some v ->
@@ -1569,6 +1598,8 @@ let init_class ctx c p context_init herits fields =
 		end
 	in
 
+	let force_constructor = ref false in
+
 	let bind_var ctx cf e stat inline =
 		let p = cf.cf_pos in
 		if not stat && has_field cf.cf_name c.cl_super then error ("Redefinition of variable " ^ cf.cf_name ^ " in subclass is not allowed") p;
@@ -1641,6 +1672,7 @@ let init_class ctx c p context_init herits fields =
 				end;
 				t
 			) "bind_var" in
+			if not stat then force_constructor := true;
 			bind_type ctx cf r (snd e) false
 	in
 
@@ -1838,7 +1870,11 @@ let init_class ctx c p context_init herits fields =
 							(* the first argument of a to-function must be the underlying type, not the abstract *)
 							(try unify_raise ctx t (tfun (tthis :: args) m) f.cff_pos with Error (Unify l,p) -> error (error_msg (Unify l)) p);
 							if not (Meta.has Meta.Impl cf.cf_meta) then cf.cf_meta <- (Meta.Impl,[],cf.cf_pos) :: cf.cf_meta;
-							a.a_to <- (follow m, Some cf) :: a.a_to
+							let m = match follow m with
+								| TMono _ when (match cf.cf_type with TFun(_,r) -> r == t_dynamic | _ -> false) -> t_dynamic
+								| m -> m
+							in
+							a.a_to <- (m, Some cf) :: a.a_to
 						| (Meta.ArrayAccess,_,_) :: _ ->
 							if is_macro then error "Macro array-access functions are not supported" p;
 							a.a_array <- cf :: a.a_array;
@@ -1846,8 +1882,15 @@ let init_class ctx c p context_init herits fields =
 						| (Meta.Op,[EBinop(op,_,_),_],_) :: _ ->
 							if is_macro then error "Macro operator functions are not supported" p;
 							let targ = if Meta.has Meta.Impl f.cff_meta then tthis else ta in
-							let left_eq = type_iseq t (tfun [targ;m] (mk_mono())) in
-							let right_eq = type_iseq t (tfun [mk_mono();targ] (mk_mono())) in
+							let left_eq,right_eq = match follow t with
+								| TFun([(_,_,t1);(_,_,t2)],_) ->
+									type_iseq targ t1,type_iseq targ t2
+								| _ ->
+									if Meta.has Meta.Impl cf.cf_meta then
+										error "Member @:op functions must accept exactly one argument" cf.cf_pos
+									else
+										error "Static @:op functions must accept exactly two arguments" cf.cf_pos
+							in
 							if not (left_eq || right_eq) then error ("The left or right argument type must be " ^ (s_type (print_context()) targ)) f.cff_pos;
 							if right_eq && Meta.has Meta.Commutative f.cff_meta then error ("@:commutative is only allowed if the right argument is not " ^ (s_type (print_context()) targ)) f.cff_pos;
 							a.a_ops <- (op,cf) :: a.a_ops;
@@ -1988,6 +2031,7 @@ let init_class ctx c p context_init herits fields =
 				| e :: l ->
 					let sc = match fst e with
 						| EConst (Ident s) -> s
+						| EBinop ((OpEq|OpNotEq|OpGt|OpGte|OpLt|OpLte) as op,(EConst (Ident s),_),(EConst ((Int _ | Float _ | String _) as c),_)) -> s ^ s_binop op ^ s_constant c
 						| _ -> ""
 					in
 					if not (Parser.is_true (Parser.eval ctx.com e)) then
@@ -2071,7 +2115,7 @@ let init_class ctx c p context_init herits fields =
 		make sure a default contructor with same access as super one will be added to the class structure at some point.
 	*)
 	(* add_constructor does not deal with overloads correctly *)
-	if not ctx.com.config.pf_overload then add_constructor ctx c p;
+	if not ctx.com.config.pf_overload then add_constructor ctx c !force_constructor p;
 	(* check overloaded constructors *)
 	(if ctx.com.config.pf_overload then match c.cl_constructor with
 	| Some ctor ->

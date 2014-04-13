@@ -107,6 +107,7 @@ type matcher = {
 	mutable toplevel_or : bool;
 	mutable has_extractor : bool;
 	mutable expr_map : (int,texpr * texpr option) PMap.t;
+	mutable is_exhaustive : bool;
 }
 
 exception Not_exhaustive of pat * st
@@ -169,6 +170,25 @@ let mk_any t p = mk_pat PAny t p
 let any = mk_any t_dynamic Ast.null_pos
 
 let fake_tuple_type = TInst(mk_class null_module ([],"-Tuple") null_pos, [])
+
+let mk_type_pat ctx mt t p =
+	let rec loop = function
+		| TClassDecl _ -> "Class"
+		| TEnumDecl _ -> "Enum"
+		| TAbstractDecl a when Meta.has Meta.RuntimeValue a.a_meta -> "Class"
+		| TTypeDecl t ->
+			begin match follow (monomorphs t.t_types t.t_type) with
+				| TInst(c,_) -> loop (TClassDecl c)
+				| TEnum(en,_) -> loop (TEnumDecl en)
+				| TAbstract(a,_) -> loop (TAbstractDecl a)
+				| _ -> error "Cannot use this type as a value" p
+			end
+		| _ -> error "Cannot use this type as a value" p
+	in
+	let tcl = Typeload.load_instance ctx {tname=loop mt;tpackage=[];tsub=None;tparams=[]} p true in
+	let t2 = match tcl with TAbstract(a,_) -> TAbstract(a,[mk_mono()]) | _ -> assert false in
+	unify ctx t t2 p;
+	mk_con_pat (CType mt) [] t2 p
 
 let mk_subs st con =
 	let map = match follow st.st_type with
@@ -323,12 +343,20 @@ let to_pattern ctx e t =
 			unify ctx e.etype t p;
 			let c = match e.eexpr with TConst c -> c | _ -> assert false in
 			mk_con_pat (CConst c) [] t p
+		| EMeta((Meta.Macro,[],_),(ECall (e1,args),_)) ->
+			let path, field, args = Codegen.get_macro_path ctx e1 args p in
+			begin match ctx.g.do_macro ctx MExpr path field args p with
+				| Some e ->	loop pctx e t
+				| None -> error "Macro failure" p
+			end
 		| EField _ ->
 			let e = type_expr ctx e (WithType t) in
 			let e = match Optimizer.make_constant_expression ctx ~concat_strings:true e with Some e -> e | None -> e in
 			(match e.eexpr with
-			| TConst c | TCast({eexpr = TConst c},None) -> mk_con_pat (CConst c) [] t p
-			| TTypeExpr mt -> mk_con_pat (CType mt) [] t p
+			| TConst c | TCast({eexpr = TConst c},None) ->
+				mk_con_pat (CConst c) [] t p
+			| TTypeExpr mt ->
+				mk_type_pat ctx mt t p
 			| TField(_, FStatic(_,cf)) when is_value_type cf.cf_type ->
 				mk_con_pat (CExpr e) [] cf.cf_type p
 			| TField(_, FEnum(en,ef)) ->
@@ -427,14 +455,12 @@ let to_pattern ctx e t =
 							error (error_msg (Unify l)) p
 						end;
 						mk_con_pat (CEnum(en,ef)) [] t p
-                    | TConst c | TCast({eexpr = TConst c},None) ->
-                    	begin try unify_raise ctx ec.etype t ec.epos with Error (Unify _,_) -> raise Not_found end;
-                        unify ctx ec.etype t p;
+					| TConst c | TCast({eexpr = TConst c},None) ->
+						begin try unify_raise ctx ec.etype t ec.epos with Error (Unify _,_) -> raise Not_found end;
+						unify ctx ec.etype t p;
                         mk_con_pat (CConst c) [] t p
 					| TTypeExpr mt ->
-						let tcl = Typeload.load_instance ctx {tname="Class";tpackage=[];tsub=None;tparams=[]} p true in
-						let t2 = match tcl with TAbstract(a,_) -> TAbstract(a,[mk_mono()]) | _ -> assert false in
-						mk_con_pat (CType mt) [] t2 p
+						mk_type_pat ctx mt t p
 					| _ ->
 						raise Not_found);
 			with Not_found ->
@@ -900,6 +926,8 @@ let rec compile mctx stl pmat toplevel =
 			| _ when not inf && PMap.is_empty !all ->
 				switch st_head cases
 			| [],_ when inf && not mctx.need_val && toplevel ->
+				(* ignore exhaustiveness, but mark context so we do not generate @:exhaustive metadata *)
+				mctx.is_exhaustive <- false;
 				switch st_head cases
 			| [],_ when inf ->
 				raise (Not_exhaustive(any,st_head))
@@ -951,7 +979,8 @@ let convert_con ctx con = match con.c_def with
 	| CArray i -> mk_const ctx con.c_pos (TInt (Int32.of_int i))
 	| CAny | CFields _ -> assert false
 
-let convert_switch ctx st cases loop =
+let convert_switch mctx st cases loop =
+	let ctx = mctx.ctx in
 	let e_st = convert_st ctx st in
 	let p = e_st.epos in
 	let mk_index_call () =
@@ -960,19 +989,25 @@ let convert_switch ctx st cases loop =
 		let ec = (!type_module_type_ref) ctx (TClassDecl ttype) None p in
 		let ef = mk (TField(ec, FStatic(ttype,cf))) (tfun [e_st.etype] ctx.t.tint) p in
 		let e = make_call ctx ef [e_st] ctx.t.tint p in
-		mk (TMeta((Meta.Exhaustive,[],p), e)) e.etype e.epos
+		e
+	in
+	let wrap_exhaustive e =
+		if mctx.is_exhaustive then
+			mk (TMeta((Meta.Exhaustive,[],e.epos),e)) e.etype e.epos
+		else
+			e
 	in
 	let e = match follow st.st_type with
 	| TEnum(_) ->
-		mk_index_call()
+		wrap_exhaustive (mk_index_call())
 	| TAbstract(a,pl) when (match Codegen.Abstract.get_underlying_type a pl with TEnum(_) -> true | _ -> false) ->
-		mk_index_call()
+		wrap_exhaustive (mk_index_call())
 	| TInst({cl_path = [],"Array"},_) as t ->
 		mk (TField (e_st,quick_field t "length")) ctx.t.tint p
 	| TAbstract(a,_) when Meta.has Meta.Enum a.a_meta ->
-		mk (TMeta((Meta.Exhaustive,[],p), e_st)) e_st.etype e_st.epos
+		wrap_exhaustive (e_st)
 	| TAbstract({a_path = [],"Bool"},_) ->
-		mk (TMeta((Meta.Exhaustive,[],p), e_st)) e_st.etype e_st.epos
+		wrap_exhaustive (e_st)
 	| _ ->
 		if List.exists (fun (con,_) -> match con.c_def with CEnum _ -> true | _ -> false) cases then
 			mk_index_call()
@@ -1136,6 +1171,7 @@ let match_expr ctx e cases def with_type p =
 		dt_count = 0;
 		has_extractor = has_extractor;
 		expr_map = PMap.empty;
+		is_exhaustive = true;
 	} in
 	(* flatten cases *)
 	let cases = List.map (fun (el,eg,e) ->
@@ -1352,7 +1388,7 @@ let match_expr ctx e cases def with_type p =
 	(* reindex *)
 	let rec loop dt = match dt with
 		| Goto i -> if usage.(i) > 1 then DTGoto (map.(i)) else loop (DynArray.get mctx.dt_lut i)
-		| Switch(st,cl) -> convert_switch ctx st cl loop
+		| Switch(st,cl) -> convert_switch mctx st cl loop
 		| Bind(bl,dt) -> DTBind(List.map (fun (v,st) -> v,convert_st ctx st) bl,loop dt)
 		| Expr id -> DTExpr (get_expr mctx id)
 		| Guard(id,dt1,dt2) -> DTGuard((match get_guard mctx id with Some e -> e | None -> assert false),loop dt1, match dt2 with None -> None | Some dt -> Some (loop dt))

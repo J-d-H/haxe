@@ -229,7 +229,7 @@ let rec type_str ctx t p =
 	| TEnum _ | TInst _ when List.memq t ctx.local_types ->
 		"*"
 	| TAbstract ({ a_impl = Some _ } as a,pl) ->
-		type_str ctx (apply_params a.a_types pl a.a_this) p
+		type_str ctx (Codegen.Abstract.get_underlying_type a pl) p
 	| TAbstract (a,_) ->
 		(match a.a_path with
 		| [], "Void" -> "void"
@@ -417,9 +417,11 @@ let rec gen_call ctx e el r =
 		spr ctx " is ";
 		gen_value ctx e2;
 	| TLocal { v_name = "__in__" } , [e1;e2] ->
+		spr ctx "(";
 		gen_value ctx e1;
 		spr ctx " in ";
 		gen_value ctx e2;
+		spr ctx ")"
 	| TLocal { v_name = "__as__" }, [e1;e2] ->
 		gen_value ctx e1;
 		spr ctx " as ";
@@ -850,7 +852,7 @@ and gen_value ctx e =
 		begin match s with
 		| "*" ->
 			gen_value ctx e1
-		| "Function" ->
+		| "Function" | "Array" ->
 			spr ctx "((";
 			gen_value ctx e1;
 			print ctx ") as %s)" s;
